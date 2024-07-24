@@ -21,7 +21,9 @@ import org.slf4j.LoggerFactory;
 
 import io.bosonnetwork.BosonException;
 import io.bosonnetwork.ConnectionStatusListener;
+import io.bosonnetwork.CryptoContext;
 import io.bosonnetwork.Id;
+import io.bosonnetwork.Identity;
 import io.bosonnetwork.LookupOption;
 import io.bosonnetwork.Network;
 import io.bosonnetwork.NodeInfo;
@@ -32,7 +34,7 @@ import io.bosonnetwork.Result;
 import io.bosonnetwork.Value;
 import io.bosonnetwork.crypto.CryptoBox.Nonce;
 import io.bosonnetwork.crypto.CryptoException;
-import io.bosonnetwork.crypto.Identity;
+import io.bosonnetwork.crypto.CryptoIdentity;
 import io.bosonnetwork.utils.Base58;
 import io.bosonnetwork.utils.Hex;
 import io.bosonnetwork.utils.ThreadLocals;
@@ -87,19 +89,19 @@ public class Node extends AbstractVerticle implements io.bosonnetwork.Node {
 
 	public static io.bosonnetwork.Node create(URL gateway) {
 		Objects.requireNonNull(gateway, "gateway");
-		return new Node(new Identity(), gateway);
+		return new Node(new CryptoIdentity(), gateway);
 	}
 
 	public static io.bosonnetwork.Node create(byte[] privateKey, URL gateway) {
 		Objects.requireNonNull(privateKey, "privateKey");
 		Objects.requireNonNull(gateway, "gateway");
-		return new Node(new Identity(privateKey), gateway);
+		return new Node(new CryptoIdentity(privateKey), gateway);
 	}
 
 	public static io.bosonnetwork.Node create(String gateway) {
 		Objects.requireNonNull(gateway, "gateway");
 		try {
-			return new Node(new Identity(), new URL(gateway));
+			return new Node(new CryptoIdentity(), new URL(gateway));
 		} catch (MalformedURLException e) {
 			throw new IllegalArgumentException(e);
 		}
@@ -111,7 +113,7 @@ public class Node extends AbstractVerticle implements io.bosonnetwork.Node {
 
 		byte[] sk = privateKey.startsWith("0x") ? Hex.decode(privateKey) : Base58.decode(privateKey);
 		try {
-			return new Node(new Identity(sk), new URL(gateway));
+			return new Node(new CryptoIdentity(sk), new URL(gateway));
 		} catch (MalformedURLException e) {
 			throw new IllegalArgumentException(e);
 		}
@@ -371,7 +373,20 @@ public class Node extends AbstractVerticle implements io.bosonnetwork.Node {
 	}
 
 	@Override
-	public byte[] encrypt(Id recipient, byte[] data) throws BosonException {
+	public byte[] sign(byte[] data) {
+		Objects.requireNonNull(data, "data");
+		return identity.sign(data);
+	}
+
+	@Override
+	public boolean verify(byte[] data, byte[] signature) {
+		Objects.requireNonNull(data, "data");
+		Objects.requireNonNull(signature, "data");
+		return identity.verify(data, signature);
+	}
+
+	@Override
+	public byte[] encrypt(Id recipient, byte[] data) {
 		Objects.requireNonNull(recipient, "sender");
 		Objects.requireNonNull(data, "data");
 		return identity.encrypt(recipient, data);
@@ -385,16 +400,9 @@ public class Node extends AbstractVerticle implements io.bosonnetwork.Node {
 	}
 
 	@Override
-	public byte[] sign(byte[] data) throws BosonException {
-		Objects.requireNonNull(data, "data");
-		return identity.sign(data);
-	}
-
-	@Override
-	public boolean verify(byte[] data, byte[] signature) throws BosonException {
-		Objects.requireNonNull(data, "data");
-		Objects.requireNonNull(signature, "data");
-		return identity.verify(data, signature);
+	public CryptoContext createCryptoContext(Id id) {
+		Objects.requireNonNull(id, "id");
+		return identity.createCryptoContext(id);
 	}
 
 	@Override
