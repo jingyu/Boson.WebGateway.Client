@@ -35,9 +35,9 @@ import io.bosonnetwork.Value;
 import io.bosonnetwork.crypto.CryptoBox.Nonce;
 import io.bosonnetwork.crypto.CryptoException;
 import io.bosonnetwork.crypto.CryptoIdentity;
+import io.bosonnetwork.crypto.Hash;
 import io.bosonnetwork.utils.Base58;
 import io.bosonnetwork.utils.Hex;
-import io.bosonnetwork.utils.ThreadLocals;
 import io.vertx.core.AbstractVerticle;
 import io.vertx.core.Promise;
 import io.vertx.core.Vertx;
@@ -249,7 +249,7 @@ public class Node extends AbstractVerticle implements io.bosonnetwork.Node {
 
 		try {
 			String auth = generateAuthorization((nonce) -> {
-				MessageDigest shasum = ThreadLocals.sha256();
+				MessageDigest shasum = Hash.sha256();
 				shasum.reset();
 				shasum.update(nonce);
 				return shasum.digest();
@@ -418,7 +418,7 @@ public class Node extends AbstractVerticle implements io.bosonnetwork.Node {
 
 		try {
 			String auth = generateAuthorization((nonce) -> {
-				MessageDigest shasum = ThreadLocals.sha256();
+				MessageDigest shasum = Hash.sha256();
 				shasum.reset();
 				shasum.update(nonce);
 				shasum.update(id.bytes());
@@ -470,7 +470,7 @@ public class Node extends AbstractVerticle implements io.bosonnetwork.Node {
 
 		try {
 			String auth = generateAuthorization((nonce) -> {
-				MessageDigest shasum = ThreadLocals.sha256();
+				MessageDigest shasum = Hash.sha256();
 				shasum.reset();
 				shasum.update(nonce);
 				shasum.update(id.bytes());
@@ -519,7 +519,7 @@ public class Node extends AbstractVerticle implements io.bosonnetwork.Node {
 
 		try {
 			String auth = generateAuthorization((nonce) -> {
-				MessageDigest shasum = ThreadLocals.sha256();
+				MessageDigest shasum = Hash.sha256();
 				shasum.reset();
 				shasum.update(nonce);
 				shasum.update(value.getId().bytes());
@@ -572,7 +572,7 @@ public class Node extends AbstractVerticle implements io.bosonnetwork.Node {
 
 		try {
 			String auth = generateAuthorization((nonce) -> {
-				MessageDigest shasum = ThreadLocals.sha256();
+				MessageDigest shasum = Hash.sha256();
 				shasum.reset();
 				shasum.update(nonce);
 				shasum.update(id.bytes());
