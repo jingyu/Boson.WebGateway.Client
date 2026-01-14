@@ -24,8 +24,10 @@ package io.bosonnetwork.higgs;
 
 import java.net.MalformedURLException;
 import java.net.URL;
+import java.util.ArrayList;
 import java.util.Collection;
 import java.util.HashMap;
+import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -62,14 +64,16 @@ import io.bosonnetwork.crypto.CryptoException;
 import io.bosonnetwork.crypto.CryptoIdentity;
 import io.bosonnetwork.crypto.Random;
 import io.bosonnetwork.crypto.Signature;
+import io.bosonnetwork.json.Json;
 import io.bosonnetwork.utils.Base58;
 import io.bosonnetwork.utils.Hex;
-import io.bosonnetwork.utils.Json;
+import io.bosonnetwork.utils.Variable;
 import io.bosonnetwork.vertx.BosonVerticle;
 import io.bosonnetwork.vertx.VertxFuture;
 
 public class HiggsNode extends BosonVerticle implements Node {
 	public static final int PERIODIC_CHECK_INTERVAL = 5 * 60 * 1000;
+	private static final long ACCESS_TOKEN_TIMEOUT = 10 * 60 * 1000;
 
 	private static final String VERSION = "Higgs/1";
 
@@ -91,12 +95,15 @@ public class HiggsNode extends BosonVerticle implements Node {
 	private String gatewayVersion;
 	private WebClient webClient;
 
+	private String accessToken;
+	private long accessTokenCreatedTime;
+
 	private long periodicCheckTimer;
 
 	private volatile boolean running;
 
 	private final Map<Id, LocalData<Value>> values;
-	private final Map<Id, LocalData<PeerInfo>> peers;
+	private final Map<Id, List<LocalData<PeerInfo>>> peers;
 
 	private static final Logger log = LoggerFactory.getLogger(HiggsNode.class);
 
@@ -231,7 +238,10 @@ public class HiggsNode extends BosonVerticle implements Node {
 									body.getJsonObject(Network.IPv4.name()).mapTo(NodeInfo.class) : null;
 							NodeInfo n6 = body.containsKey(Network.IPv6.name()) ?
 									body.getJsonObject(Network.IPv6.name()).mapTo(NodeInfo.class) : null;
-							promise.complete(Result.of(n4, n6));
+							if (n4 == n6) // all null
+								promise.complete(null);
+							else
+								promise.complete(Result.of(n4, n6));
 						} else if (res.statusCode() == 404) {
 							promise.complete(null);
 						} else {
@@ -248,23 +258,10 @@ public class HiggsNode extends BosonVerticle implements Node {
 	}
 
 	@Override
-	public VertxFuture<Value> findValue(Id id) {
-		return findValue(id, -1, null);
-	}
-
-	@Override
-	public VertxFuture<Value> findValue(Id id, int expectedSequenceNumber) {
-		return findValue(id, expectedSequenceNumber, null);
-	}
-
-	@Override
-	public VertxFuture<Value> findValue(Id id, LookupOption option) {
-		return findValue(id, -1, option);
-	}
-
-	@Override
 	public VertxFuture<Value> findValue(Id id, int expectedSequenceNumber, LookupOption option) {
 		Objects.requireNonNull(id, "id");
+		if (expectedSequenceNumber < -1)
+			throw new IllegalArgumentException("expectedSequenceNumber must be >= -1");
 		if (!isRunning())
 			return VertxFuture.failedFuture(new IllegalStateException("Node not running"));
 
@@ -299,23 +296,10 @@ public class HiggsNode extends BosonVerticle implements Node {
 	}
 
 	@Override
-	public VertxFuture<Void> storeValue(Value value) {
-		return storeValue(value, -1, false);
-	}
-
-	@Override
-	public VertxFuture<Void> storeValue(Value value, int expectedSequenceNumber) {
-		return storeValue(value, expectedSequenceNumber, false);
-	}
-
-	@Override
-	public VertxFuture<Void> storeValue(Value value, boolean persistent) {
-		return storeValue(value, -1, persistent);
-	}
-
-	@Override
 	public VertxFuture<Void> storeValue(Value value, int expectedSequenceNumber, boolean persistent) {
 		Objects.requireNonNull(value, "value");
+		if (expectedSequenceNumber < -1)
+			throw new IllegalArgumentException("expectedSequenceNumber must be >= -1");
 		if (!isRunning())
 			return VertxFuture.failedFuture(new IllegalStateException("Node not running"));
 
@@ -349,25 +333,12 @@ public class HiggsNode extends BosonVerticle implements Node {
 	}
 
 	@Override
-	public VertxFuture<List<PeerInfo>> findPeer(Id id) {
-		return findPeer(id, 0, null);
-	}
-
-	@Override
-	public VertxFuture<List<PeerInfo>> findPeer(Id id, int expected) {
-		return findPeer(id, expected, null);
-	}
-
-	@Override
-	public VertxFuture<List<PeerInfo>> findPeer(Id id, LookupOption option) {
-		return findPeer(id, 0, option);
-	}
-
-	@Override
-	public VertxFuture<List<PeerInfo>> findPeer(Id id, int expected, LookupOption option) {
+	public VertxFuture<List<PeerInfo>> findPeer(Id id, int expectedSequenceNumber, int expectedCount, LookupOption option) {
 		Objects.requireNonNull(id, "id");
-		if (expected < 0)
-			throw new IllegalArgumentException("expected must be >= 0");
+		if (expectedSequenceNumber < -1)
+			throw new IllegalArgumentException("expectedSequenceNumber must be >= -1");
+		if (expectedCount < 0)
+			throw new IllegalArgumentException("expectedCount must be >= 0");
 
 		if (!isRunning())
 			return VertxFuture.failedFuture(new IllegalStateException("Node not running"));
@@ -379,8 +350,9 @@ public class HiggsNode extends BosonVerticle implements Node {
 		runOnContext(v -> {
 			HttpRequest<Buffer> request = webClient.get("/peers/" + id);
 			request.addQueryParam("mode", lookupOption.name().toLowerCase());
-			if (expected > 0)
-				request.addQueryParam("expected", Integer.toString(expected));
+			if (expectedSequenceNumber >= 0)
+				request.addQueryParam("seq", Integer.toString(expectedSequenceNumber));
+			request.addQueryParam("count", Integer.toString(expectedCount));
 
 			request.bearerTokenAuthentication(getAccessToken())
 					.send()
@@ -389,8 +361,8 @@ public class HiggsNode extends BosonVerticle implements Node {
 								JsonArray body = res.bodyAsJsonArray();
 								List<PeerInfo> result = body.stream()
 										.map(o -> {
-											if (o instanceof JsonArray ja) {
-												return Json.objectMapper().convertValue(ja.getList(), PeerInfo.class);
+											if (o instanceof JsonObject jo) {
+												return Json.objectMapper().convertValue(jo.getMap(), PeerInfo.class);
 											} else {
 												throw new CompletionException(new HiggsException(0, "Gateway error: invalid response"));
 											}
@@ -412,26 +384,32 @@ public class HiggsNode extends BosonVerticle implements Node {
 	}
 
 	@Override
-	public VertxFuture<Void> announcePeer(PeerInfo peer) {
-		return announcePeer(peer, false);
-	}
-
-	@Override
-	public VertxFuture<Void> announcePeer(PeerInfo peer, boolean persistent) {
+	public VertxFuture<Void> announcePeer(PeerInfo peer, int expectedSequenceNumber, boolean persistent) {
 		Objects.requireNonNull(peer, "peer");
+		if (expectedSequenceNumber < -1)
+			throw new IllegalArgumentException("expectedSequenceNumber must be >= -1");
 		if (!isRunning())
 			return VertxFuture.failedFuture(new IllegalStateException("Node not running"));
+
+		JsonObject body = new JsonObject();
+		if (expectedSequenceNumber >= 0)
+			body.put("expectedSequenceNumber", expectedSequenceNumber);
+		body.put("peer", peer);
 
 		Promise<Void> promise = Promise.promise();
 
 		// noinspection CodeBlock2Expr
 		runOnContext(v -> {
+			PeerInfo existing = _getPeer(peer.getId(), peer.getFingerprint());
+			if (existing != null && existing.getSequenceNumber() > peer.getSequenceNumber())
+				promise.fail(new HiggsException(0, "Peer already announced with a higher sequence number"));
+
 			webClient.post("/peers")
 					.bearerTokenAuthentication(getAccessToken())
-					.sendJson(peer)
+					.sendJson(body)
 					.onSuccess((res) -> {
 						if (res.statusCode() == 201) {
-							peers.put(peer.getId(), new LocalData<>(peer, persistent));
+							_putPeer(peer, persistent);
 							promise.complete();
 						} else {
 							promise.fail(wrapErrorResponseToException(res));
@@ -465,23 +443,161 @@ public class HiggsNode extends BosonVerticle implements Node {
 		return VertxFuture.of(promise.future());
 	}
 
+	/**
+	 * Compares two peers to determine their ordering priority.
+	 * Ordering rules:
+	 * 1. Sequence number in descending order (higher first).
+	 * 2. Authentication status (authenticated peers before unauthenticated).
+	 * 3. For authenticated peers, XOR distance to the target is used as a tiebreaker.
+	 * <p>
+	 * Unauthenticated peers compare as equal and are thus unordered relative to each other.
+	 *
+	 * @param p1 the first peer to compare
+	 * @param p2 the second peer to compare
+	 * @return negative if p1 < p2, positive if p1 > p2, zero if equal
+	 */
+	private static int peerOrder(PeerInfo p1, PeerInfo p2) {
+		int diff = Integer.compare(p2.getSequenceNumber(), p1.getSequenceNumber());
+		if (diff != 0)
+			return diff;
+
+		diff = Boolean.compare(p2.isAuthenticated(), p1.isAuthenticated());
+		if (diff != 0)
+			return diff;
+
+		// Kademlia XOR distance
+		if (p1.isAuthenticated() && p2.isAuthenticated())
+			return p1.getId().threeWayCompare(p1.getNodeId(), p2.getNodeId());
+
+		return 0;
+	}
+
 	@Override
-	public VertxFuture<PeerInfo> getPeer(Id peerId) {
-		Objects.requireNonNull(peerId);
-		Promise<PeerInfo> promise = Promise.promise();
+	public VertxFuture<List<PeerInfo>> getPeers(Id peerId) {
+		Promise<List<PeerInfo>> promise = Promise.promise();
 		runOnContext(v -> {
-			LocalData<PeerInfo> data = peers.get(peerId);
-			promise.complete(data != null ? data.data() : null);
+			List<PeerInfo> result = peers.getOrDefault(peerId, List.of()).stream()
+					.map(LocalData::data)
+					.sorted(HiggsNode::peerOrder)
+					.toList();
+			promise.complete(result);
 		});
 		return VertxFuture.of(promise.future());
 	}
 
 	@Override
-	public VertxFuture<Boolean> removePeer(Id peerId) {
-		Objects.requireNonNull(peerId, "peerId");
+	public VertxFuture<Boolean> removePeers(Id peerId) {
 		Promise<Boolean> promise = Promise.promise();
 		runOnContext(v -> promise.complete(peers.remove(peerId) != null));
 		return VertxFuture.of(promise.future());
+	}
+
+	@Override
+	public VertxFuture<PeerInfo> getPeer(Id peerId, long fingerprint) {
+		Promise<PeerInfo> promise = Promise.promise();
+		runOnContext(v -> promise.complete(_getPeer(peerId, fingerprint)));
+		return VertxFuture.of(promise.future());
+	}
+
+	@Override
+	public VertxFuture<Boolean> removePeer(Id peerId, long fingerprint) {
+		Promise<Boolean> promise = Promise.promise();
+		runOnContext(v -> promise.complete(_removePeer(peerId, fingerprint)));
+		return VertxFuture.of(promise.future());
+	}
+
+	private PeerInfo _getPeer(Id peerId, long fingerprint) {
+		List<LocalData<PeerInfo>> lds = peers.getOrDefault(peerId, List.of());
+		for (LocalData<PeerInfo> ld : lds) {
+			if (ld.data().getFingerprint() == fingerprint)
+				return ld.data();
+		}
+		return null;
+	}
+
+	private boolean _putPeer(PeerInfo peer, boolean persistent) {
+		Variable<Boolean> updated = Variable.of(false);
+
+		peers.compute(peer.getId(), (k, v) -> {
+			if (v == null) {
+				updated.set(true);
+				return List.of(new LocalData<>(peer, persistent));
+			}
+
+			if (v.size() == 1) {
+				if (v.get(0).data().getFingerprint() == peer.getFingerprint()) {
+					// same peer
+					if (v.get(0).data().getSequenceNumber() <= peer.getSequenceNumber()) {
+						updated.set(true);
+						return List.of(new LocalData<>(peer, persistent));
+					} else {
+						return v;
+					}
+				} else {
+					List<LocalData<PeerInfo>> result = new ArrayList<>();
+					result.add(v.get(0));
+					result.add(new LocalData<>(peer, persistent));
+					updated.set(true);
+					return result;
+				}
+			}
+
+			for (int i = 0; i < v.size(); i++) {
+				if (v.get(i).data().getFingerprint() == peer.getFingerprint()) {
+					// same peer
+					if (v.get(i).data().getSequenceNumber() <= peer.getSequenceNumber()) {
+						v.set(i, new LocalData<>(peer, persistent));
+						updated.set(true);
+						return v;
+					} else {
+						return v;
+					}
+				}
+			}
+
+			v.add(new LocalData<>(peer, persistent));
+			updated.set(true);
+			return v;
+		});
+
+		return updated.get();
+	}
+
+	private boolean _removePeer(Id peerId, long fingerprint) {
+		Variable<Boolean> removed = Variable.of(false);
+
+		peers.compute(peerId, (k, v) -> {
+			if (v == null) {
+				removed.set(false);
+				return null;
+			}
+
+			if (v.size() == 1) { // optimized, Immutable map
+				if (v.get(0).data().getFingerprint() == fingerprint) {
+					removed.set(true);
+					return null;
+				} else {
+					return v;
+				}
+			}
+
+			final Iterator<LocalData<PeerInfo>> it = v.iterator();
+			while (it.hasNext()) {
+				LocalData<PeerInfo> ld = it.next();
+				if (ld.data().getFingerprint() == fingerprint) {
+					it.remove();
+					removed.set(true);
+					break;
+				}
+			}
+
+			if (removed.get())
+				return v.isEmpty() ? null : (v.size() == 1 ? List.of(v.get(0)) : v);
+			else
+				return v;
+		});
+
+		return removed.get();
 	}
 
 	@Override
@@ -532,14 +648,45 @@ public class HiggsNode extends BosonVerticle implements Node {
 	}
 
 	private void periodicCheck(long timerId) {
+		evictExpiredData();
 		reannouncePeers();
 		reannounceValues();
+	}
+
+	private void evictExpiredData() {
+		values.entrySet().removeIf(entry -> entry.getValue().isExpired());
+
+		for (Iterator<Map.Entry<Id, List<LocalData<PeerInfo>>>> it = peers.entrySet().iterator(); it.hasNext(); ) {
+			Map.Entry<Id, List<LocalData<PeerInfo>>> entry = it.next();
+			List<LocalData<PeerInfo>> lst = entry.getValue();
+			if (lst.isEmpty()) {
+				it.remove();
+				continue;
+			}
+
+			if (lst.size() == 1) {
+				if (lst.get(0).isExpired())
+					it.remove();
+
+				continue;
+			}
+
+			lst.removeIf(LocalData::isExpired);
+			if (lst.isEmpty()) {
+				it.remove();
+				continue;
+			}
+
+			if (lst.size() == 1)
+				entry.setValue(List.of(lst.get(0)));
+		}
 	}
 
 	private void reannouncePeers() {
 		log.info("Trying to reannounce the persistent peers...");
 		long ts = System.currentTimeMillis() - MAX_PEER_AGE + PERIODIC_CHECK_INTERVAL * 2;
 		List<PeerInfo> todos = peers.values().stream()
+				.flatMap(Collection::stream)
 				.filter(ld -> ld.isPersistent() && ld.lastAnnounced() <= ts)
 				.map(LocalData::data)
 				.toList();
@@ -551,7 +698,7 @@ public class HiggsNode extends BosonVerticle implements Node {
 		for (PeerInfo peer : todos) {
 			chain.compose(v -> {
 				log.debug("Reannounce the peers {}...", peer.getId());
-				return announcePeer(peer, true).toVertxFuture();
+				return Future.fromCompletionStage(announcePeer(peer, true));
 			});
 		}
 	}
@@ -571,7 +718,7 @@ public class HiggsNode extends BosonVerticle implements Node {
 		for (Value value : peers) {
 			chain.compose(v -> {
 				log.debug("Re-announce the value {}...", value.getId());
-				return storeValue(value, true).toVertxFuture();
+				return Future.fromCompletionStage(storeValue(value, true));
 			});
 		}
 	}
@@ -621,44 +768,51 @@ public class HiggsNode extends BosonVerticle implements Node {
 	}
 
 	private String getAccessToken() {
-		byte[] nonce = Random.randomBytes(24);
-		long expiration = System.currentTimeMillis() / 1000 + 600;
+		long now = System.currentTimeMillis();
+		if ((now - accessTokenCreatedTime) > (ACCESS_TOKEN_TIMEOUT - 60000)) {
+			byte[] nonce = Random.randomBytes(24);
+			long expiration = (now + ACCESS_TOKEN_TIMEOUT) / 1000;
 
-		Map<String, Object> claims = new LinkedHashMap<>();
-		claims.put("jti", nonce);
-		claims.put("iss", identity.getId().bytes());
-		claims.put("aud", gatewayNodeId.bytes());
-		claims.put("sub", userId.bytes());
-		if (deviceIdentity != null)
-			claims.put("asc", deviceIdentity.getId().bytes());
-		claims.put("exp", expiration);
-		claims.put("scp", "client");
+			Map<String, Object> claims = new LinkedHashMap<>();
+			claims.put("jti", nonce);
+			claims.put("iss", identity.getId().bytes());
+			claims.put("aud", gatewayNodeId.bytes());
+			claims.put("sub", userId.bytes());
+			if (deviceIdentity != null)
+				claims.put("asc", deviceIdentity.getId().bytes());
+			claims.put("exp", expiration);
+			claims.put("scp", "client");
 
-		try {
-			byte[] payload = Json.cborMapper().writeValueAsBytes(claims);
-			byte[] signature = identity.sign(payload);
+			try {
+				byte[] payload = Json.cborMapper().writeValueAsBytes(claims);
+				byte[] signature = identity.sign(payload);
 
-			return Json.BASE64_ENCODER.encodeToString(payload) + '.' + Json.BASE64_ENCODER.encodeToString(signature);
-		} catch (Exception e) {
-			throw new RuntimeException("INTERNAL ERROR: Failed to generate the access token", e);
+				accessToken = Json.BASE64_ENCODER.encodeToString(payload) + '.' + Json.BASE64_ENCODER.encodeToString(signature);
+				accessTokenCreatedTime = now;
+			} catch (Exception e) {
+				throw new RuntimeException("INTERNAL ERROR: Failed to generate the access token", e);
+			}
 		}
+
+		return accessToken;
 	}
 
 	private HiggsException wrapErrorResponseToException(HttpResponse<Buffer> res) {
 		String body = res.bodyAsString();
 		if (res.statusCode() == 401) {
 			// noinspection LoggingSimilarMessage
-			log.error("HTTP status: {}, Unauthorized. {}", res.statusCode(), body);
-			return new HiggsException(res.statusCode(), body);
+			log.debug("HTTP status: {}, Unauthorized. {}", res.statusCode(), body);
 		} else if (res.statusCode() == 429) {
 			// noinspection LoggingSimilarMessage
-			log.error("HTTP status: {}, Too Many Requests. {}", res.statusCode(), body);
-			return new HiggsException(res.statusCode(), body);
+			log.debug("HTTP status: {}, Too Many Requests. {}", res.statusCode(), body);
+		} else if (res.statusCode() == 504) {
+			log.debug("HTTP status: {}, Gateway timeout. {}", res.statusCode(), body);
 		} else {
 			// noinspection LoggingSimilarMessage
 			log.error("HTTP status: {}, {}", res.statusCode(), body);
-			return new HiggsException(res.statusCode(), body);
 		}
+
+		return new HiggsException(res.statusCode(), body);
 	}
 
 	public static Builder builder() {
@@ -739,6 +893,8 @@ public class HiggsNode extends BosonVerticle implements Node {
 
 		public Builder gatewayUrl(URL url) {
 			Objects.requireNonNull(url, "url");
+			if (!url.getProtocol().equals("http") && !url.getProtocol().equals("https"))
+				throw new IllegalArgumentException("Invalid url protocol: " + url.getProtocol());
 			this.gatewayUrl = url;
 			return this;
 		}

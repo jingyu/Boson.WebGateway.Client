@@ -22,15 +22,27 @@
 
 package io.bosonnetwork.higgs;
 
+import io.bosonnetwork.Node;
+import io.bosonnetwork.PeerInfo;
+import io.bosonnetwork.Value;
+
 public class LocalData<T> {
 	private final T data;
 	private final boolean persistent;
 	private final long lastAnnounced;
+	private final long ttl;
 
 	protected LocalData(T data, boolean persistent) {
 		this.data = data;
 		this.persistent = persistent;
 		this.lastAnnounced = System.currentTimeMillis();
+
+		if (data instanceof PeerInfo)
+			ttl = Node.MAX_PEER_AGE;
+		else if (data instanceof Value)
+			ttl = Node.MAX_VALUE_AGE;
+		else
+			throw new IllegalArgumentException("Unsupported data type: " + data.getClass());
 	}
 
 	protected LocalData(T data) {
@@ -47,5 +59,9 @@ public class LocalData<T> {
 
 	public long lastAnnounced() {
 		return lastAnnounced;
+	}
+
+	public boolean isExpired() {
+		return !persistent && System.currentTimeMillis() - lastAnnounced > ttl;
 	}
 }
