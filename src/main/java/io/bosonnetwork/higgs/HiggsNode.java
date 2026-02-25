@@ -724,7 +724,7 @@ public class HiggsNode extends BosonVerticle implements Node {
 	}
 
 	@Override
-	public void prepare(Vertx vertx, Context context) {
+	protected void prepare(Vertx vertx, Context context) {
 		super.prepare(vertx, context);
 
 		WebClientOptions options = new WebClientOptions()
@@ -737,7 +737,7 @@ public class HiggsNode extends BosonVerticle implements Node {
 	}
 
 	@Override
-	public Future<Void> deploy() {
+	protected Future<Void> deploy() {
 		return getGatewayVersion().andThen(ar -> {
 			if (ar.succeeded()) {
 				this.gatewayVersion = ar.result();
@@ -751,7 +751,7 @@ public class HiggsNode extends BosonVerticle implements Node {
 	}
 
 	@Override
-	public Future<Void> undeploy() {
+	protected Future<Void> undeploy() {
 		running = false;
 
 		if (periodicCheckTimer > 0) {
