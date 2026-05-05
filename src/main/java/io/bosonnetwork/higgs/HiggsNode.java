@@ -621,10 +621,26 @@ public class HiggsNode extends BosonVerticle implements Node {
 	}
 
 	@Override
+	public byte[] encrypt(Id receiver, byte[] nonce, byte[] data) throws CryptoException {
+		Objects.requireNonNull(receiver, "receiver");
+		Objects.requireNonNull(nonce, "nonce");
+		Objects.requireNonNull(data, "data");
+		return identity.encrypt(receiver, nonce, data);
+	}
+
+	@Override
 	public byte[] decrypt(Id sender, byte[] data) throws CryptoException {
 		Objects.requireNonNull(sender, "sender");
 		Objects.requireNonNull(data, "data");
 		return identity.decrypt(sender, data);
+	}
+
+	@Override
+	public byte[] decrypt(Id sender, byte[] nonce, byte[] data) throws CryptoException {
+		Objects.requireNonNull(sender, "sender");
+		Objects.requireNonNull(nonce, "nonce");
+		Objects.requireNonNull(data, "data");
+		return identity.decrypt(sender, nonce, data);
 	}
 
 	@Override
