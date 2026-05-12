@@ -32,6 +32,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.concurrent.CompletionException;
 
 import io.vertx.core.Context;
@@ -42,6 +43,7 @@ import io.vertx.core.buffer.Buffer;
 import io.vertx.core.http.HttpVersion;
 import io.vertx.core.json.JsonArray;
 import io.vertx.core.json.JsonObject;
+import io.vertx.core.net.TrustOptions;
 import io.vertx.ext.web.client.HttpRequest;
 import io.vertx.ext.web.client.HttpResponse;
 import io.vertx.ext.web.client.WebClient;
@@ -62,6 +64,7 @@ import io.bosonnetwork.Result;
 import io.bosonnetwork.Value;
 import io.bosonnetwork.crypto.CryptoException;
 import io.bosonnetwork.crypto.CryptoIdentity;
+import io.bosonnetwork.crypto.HybridTrustManager;
 import io.bosonnetwork.crypto.Random;
 import io.bosonnetwork.crypto.Signature;
 import io.bosonnetwork.json.Json;
@@ -88,6 +91,7 @@ public class HiggsNode extends BosonVerticle implements Node {
 	private final Identity deviceIdentity;
 
 	private final Id gatewayNodeId;
+	private final Id gatewayPeerId;
 	private final URL gatewayUrl;
 
 	private LookupOption defaultLookupOption;
@@ -107,12 +111,13 @@ public class HiggsNode extends BosonVerticle implements Node {
 
 	private static final Logger log = LoggerFactory.getLogger(HiggsNode.class);
 
-	private HiggsNode(Vertx vertx, Signature.KeyPair userKey, Id gatewayNodeId, URL gatewayUrl) {
+	private HiggsNode(Vertx vertx, Signature.KeyPair userKey, Id gatewayNodeId, Id gatewayPeerId, URL gatewayUrl) {
 		this.vertxInstance = vertx;
 		this.userIdentity = new CryptoIdentity(userKey);
 		this.userId = userIdentity.getId();
 		this.deviceIdentity = null;
 		this.gatewayNodeId = gatewayNodeId;
+		this.gatewayPeerId = gatewayPeerId;
 		this.gatewayUrl = gatewayUrl;
 		this.defaultLookupOption = LookupOption.ARBITRARY;
 		this.values = new HashMap<>();
@@ -121,12 +126,13 @@ public class HiggsNode extends BosonVerticle implements Node {
 		this.identity = userIdentity;
 	}
 
-	private HiggsNode(Vertx vertx, Id userId, Signature.KeyPair deviceKey, Id gatewayNodeId, URL gatewayUrl) {
+	private HiggsNode(Vertx vertx, Id userId, Signature.KeyPair deviceKey, Id gatewayNodeId, Id gatewayPeerId, URL gatewayUrl) {
 		this.vertxInstance = vertx;
 		this.userIdentity = null;
 		this.userId = userId;
 		this.deviceIdentity = new CryptoIdentity(deviceKey);
 		this.gatewayNodeId = gatewayNodeId;
+		this.gatewayPeerId = gatewayPeerId;
 		this.gatewayUrl = gatewayUrl;
 		this.defaultLookupOption = LookupOption.ARBITRARY;
 		this.values = new HashMap<>();
@@ -743,11 +749,17 @@ public class HiggsNode extends BosonVerticle implements Node {
 	protected void prepare(Vertx vertx, Context context) {
 		super.prepare(vertx, context);
 
+		boolean ssl = gatewayUrl.getProtocol().equals("https");
 		WebClientOptions options = new WebClientOptions()
-				.setSsl(gatewayUrl.getProtocol().equals("https"))
+				.setSsl(ssl)
 				.setDefaultHost(gatewayUrl.getHost())
 				.setDefaultPort(gatewayUrl.getPort() > 0 ? gatewayUrl.getPort() : gatewayUrl.getDefaultPort())
 				.setProtocolVersion(HttpVersion.HTTP_1_1);
+
+		if (ssl) {
+			options.setEnabledSecureTransportProtocols(Set.of("TLSv1.3"))
+					.setTrustOptions(TrustOptions.wrap(new HybridTrustManager(gatewayPeerId.toString(), gatewayPeerId.bytes())));
+		}
 
 		webClient = WebClient.create(vertx, options);
 	}
@@ -844,6 +856,7 @@ public class HiggsNode extends BosonVerticle implements Node {
 		private Signature.KeyPair deviceKey;
 		// gateway id and url
 		private Id gatewayNodeId;
+		private Id gatewayPeerId;
 		private URL gatewayUrl;
 
 		private Builder() {
@@ -907,6 +920,12 @@ public class HiggsNode extends BosonVerticle implements Node {
 			return this;
 		}
 
+		public Builder gatewayPeerId(Id id) {
+			Objects.requireNonNull(id, "gatewayPeerId");
+			this.gatewayPeerId = id;
+			return this;
+		}
+
 		public Builder gatewayUrl(URL url) {
 			Objects.requireNonNull(url, "url");
 			if (!url.getProtocol().equals("http") && !url.getProtocol().equals("https"))
@@ -934,13 +953,16 @@ public class HiggsNode extends BosonVerticle implements Node {
 			if (gatewayNodeId == null)
 				throw new IllegalStateException("gateway node ID not set");
 
+			if (gatewayPeerId == null)
+				throw new IllegalStateException("gateway peer ID not set");
+
 			if (gatewayUrl == null)
 				throw new IllegalStateException("gateway URL not set");
 
 			if (userKey != null)
-				return new HiggsNode(vertx, userKey, gatewayNodeId, gatewayUrl);
+				return new HiggsNode(vertx, userKey, gatewayNodeId, gatewayPeerId, gatewayUrl);
 			else
-				return new HiggsNode(vertx, userId, deviceKey, gatewayNodeId, gatewayUrl);
+				return new HiggsNode(vertx, userId, deviceKey, gatewayNodeId, gatewayPeerId, gatewayUrl);
 		}
 	}
 }
