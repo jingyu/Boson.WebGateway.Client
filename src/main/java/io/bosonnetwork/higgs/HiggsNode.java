@@ -24,11 +24,11 @@ package io.bosonnetwork.higgs;
 
 import java.net.MalformedURLException;
 import java.net.URL;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.HashMap;
 import java.util.Iterator;
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -65,9 +65,10 @@ import io.bosonnetwork.Value;
 import io.bosonnetwork.crypto.CryptoException;
 import io.bosonnetwork.crypto.CryptoIdentity;
 import io.bosonnetwork.crypto.HybridTrustManager;
-import io.bosonnetwork.crypto.Random;
 import io.bosonnetwork.crypto.Signature;
+import io.bosonnetwork.cwt.SignedCwt;
 import io.bosonnetwork.json.Json;
+import io.bosonnetwork.service.AccessScope;
 import io.bosonnetwork.utils.Base58;
 import io.bosonnetwork.utils.Hex;
 import io.bosonnetwork.utils.Variable;
@@ -796,30 +797,18 @@ public class HiggsNode extends BosonVerticle implements Node {
 	}
 
 	private String getAccessToken() {
-		long now = System.currentTimeMillis();
-		if ((now - accessTokenCreatedTime) > (ACCESS_TOKEN_TIMEOUT - 60000)) {
-			byte[] nonce = Random.randomBytes(24);
-			long expiration = (now + ACCESS_TOKEN_TIMEOUT) / 1000;
-
-			Map<String, Object> claims = new LinkedHashMap<>();
-			claims.put("jti", nonce);
-			claims.put("iss", identity.getId().bytes());
-			claims.put("aud", gatewayNodeId.bytes());
-			claims.put("sub", userId.bytes());
+		if (accessToken == null || System.currentTimeMillis() - accessTokenCreatedTime > ACCESS_TOKEN_TIMEOUT) {
+			SignedCwt.Builder builder = SignedCwt.builder(identity)
+					.subject(userId)
+					.audience(gatewayPeerId)
+					.expiration(Duration.ofMillis(ACCESS_TOKEN_TIMEOUT + 1000 * 60))
+					.notBeforeNow()
+					.issuedAtNow()
+					.scope(AccessScope.CLIENT.toString());
 			if (deviceIdentity != null)
-				claims.put("asc", deviceIdentity.getId().bytes());
-			claims.put("exp", expiration);
-			claims.put("scp", "client");
+				builder.clientId(deviceIdentity.getId());
 
-			try {
-				byte[] payload = Json.cborMapper().writeValueAsBytes(claims);
-				byte[] signature = identity.sign(payload);
-
-				accessToken = Json.BASE64_ENCODER.encodeToString(payload) + '.' + Json.BASE64_ENCODER.encodeToString(signature);
-				accessTokenCreatedTime = now;
-			} catch (Exception e) {
-				throw new RuntimeException("INTERNAL ERROR: Failed to generate the access token", e);
-			}
+			accessToken = builder.buildToString();
 		}
 
 		return accessToken;
