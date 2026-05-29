@@ -73,7 +73,7 @@ import io.bosonnetwork.utils.Base58;
 import io.bosonnetwork.utils.Hex;
 import io.bosonnetwork.utils.Variable;
 import io.bosonnetwork.vertx.BosonVerticle;
-import io.bosonnetwork.vertx.VertxFuture;
+import io.bosonnetwork.vertx.ContextualFuture;
 
 public class HiggsNode extends BosonVerticle implements Node {
 	public static final int PERIODIC_CHECK_INTERVAL = 5 * 60 * 1000;
@@ -177,19 +177,19 @@ public class HiggsNode extends BosonVerticle implements Node {
 	}
 
 	@Override
-	public VertxFuture<Void> start() {
+	public ContextualFuture<Void> start() {
 		if (this.vertx != null)
-			return VertxFuture.failedFuture(new IllegalStateException("Already started"));
+			return ContextualFuture.failedFuture(new IllegalStateException("Already started"));
 
 		Vertx instance = vertxInstance != null ? vertxInstance : Vertx.vertx();
 		Future<Void> future = instance.deployVerticle(this).mapEmpty();
-		return VertxFuture.of(future);
+		return ContextualFuture.of(future);
 	}
 
 	@Override
-	public VertxFuture<Void> stop() {
+	public ContextualFuture<Void> stop() {
 		if (!isRunning())
-			return VertxFuture.failedFuture(new IllegalStateException("Not started"));
+			return ContextualFuture.failedFuture(new IllegalStateException("Not started"));
 
 		Promise<Void> promise = Promise.promise();
 		runOnContext(v -> {
@@ -200,7 +200,7 @@ public class HiggsNode extends BosonVerticle implements Node {
 			vertx.undeploy(deploymentId).onComplete(promise);
 		});
 
-		return VertxFuture.of(promise.future());
+		return ContextualFuture.of(promise.future());
 	}
 
 	@Override
@@ -209,25 +209,25 @@ public class HiggsNode extends BosonVerticle implements Node {
 	}
 
 	@Override
-	public VertxFuture<Void> bootstrap(NodeInfo node) {
-		return VertxFuture.succeededFuture();
+	public ContextualFuture<Void> bootstrap(NodeInfo node) {
+		return ContextualFuture.succeededFuture();
 	}
 
 	@Override
-	public VertxFuture<Void> bootstrap(Collection<NodeInfo> bootstrapNodes) {
-		return VertxFuture.succeededFuture();
+	public ContextualFuture<Void> bootstrap(Collection<NodeInfo> bootstrapNodes) {
+		return ContextualFuture.succeededFuture();
 	}
 
 	@Override
-	public VertxFuture<Result<NodeInfo>> findNode(Id id) {
+	public ContextualFuture<Result<NodeInfo>> findNode(Id id) {
 		return findNode(id, defaultLookupOption);
 	}
 
 	@Override
-	public VertxFuture<Result<NodeInfo>> findNode(Id id, LookupOption option) {
+	public ContextualFuture<Result<NodeInfo>> findNode(Id id, LookupOption option) {
 		Objects.requireNonNull(id, "id");
 		if (!isRunning())
-			return VertxFuture.failedFuture(new IllegalStateException("Node not running"));
+			return ContextualFuture.failedFuture(new IllegalStateException("Node not running"));
 
 		final LookupOption lookupOption = option != null ? option : defaultLookupOption;
 		Promise<Result<NodeInfo>> promise = Promise.promise();
@@ -261,16 +261,16 @@ public class HiggsNode extends BosonVerticle implements Node {
 					});
 		});
 
-		return VertxFuture.of(promise.future());
+		return ContextualFuture.of(promise.future());
 	}
 
 	@Override
-	public VertxFuture<Value> findValue(Id id, int expectedSequenceNumber, LookupOption option) {
+	public ContextualFuture<Value> findValue(Id id, int expectedSequenceNumber, LookupOption option) {
 		Objects.requireNonNull(id, "id");
 		if (expectedSequenceNumber < -1)
 			throw new IllegalArgumentException("expectedSequenceNumber must be >= -1");
 		if (!isRunning())
-			return VertxFuture.failedFuture(new IllegalStateException("Node not running"));
+			return ContextualFuture.failedFuture(new IllegalStateException("Node not running"));
 
 		final LookupOption lookupOption = option != null ? option : defaultLookupOption;
 		Promise<Value> promise = Promise.promise();
@@ -299,16 +299,16 @@ public class HiggsNode extends BosonVerticle implements Node {
 					});
 		});
 
-		return VertxFuture.of(promise.future());
+		return ContextualFuture.of(promise.future());
 	}
 
 	@Override
-	public VertxFuture<Void> storeValue(Value value, int expectedSequenceNumber, boolean persistent) {
+	public ContextualFuture<Void> storeValue(Value value, int expectedSequenceNumber, boolean persistent) {
 		Objects.requireNonNull(value, "value");
 		if (expectedSequenceNumber < -1)
 			throw new IllegalArgumentException("expectedSequenceNumber must be >= -1");
 		if (!isRunning())
-			return VertxFuture.failedFuture(new IllegalStateException("Node not running"));
+			return ContextualFuture.failedFuture(new IllegalStateException("Node not running"));
 
 		JsonObject body = new JsonObject();
 		if (expectedSequenceNumber >= 0)
@@ -336,11 +336,11 @@ public class HiggsNode extends BosonVerticle implements Node {
 					});
 		});
 
-		return VertxFuture.of(promise.future());
+		return ContextualFuture.of(promise.future());
 	}
 
 	@Override
-	public VertxFuture<List<PeerInfo>> findPeer(Id id, int expectedSequenceNumber, int expectedCount, LookupOption option) {
+	public ContextualFuture<List<PeerInfo>> findPeer(Id id, int expectedSequenceNumber, int expectedCount, LookupOption option) {
 		Objects.requireNonNull(id, "id");
 		if (expectedSequenceNumber < -1)
 			throw new IllegalArgumentException("expectedSequenceNumber must be >= -1");
@@ -348,7 +348,7 @@ public class HiggsNode extends BosonVerticle implements Node {
 			throw new IllegalArgumentException("expectedCount must be >= 0");
 
 		if (!isRunning())
-			return VertxFuture.failedFuture(new IllegalStateException("Node not running"));
+			return ContextualFuture.failedFuture(new IllegalStateException("Node not running"));
 
 		final LookupOption lookupOption = option != null ? option : defaultLookupOption;
 
@@ -387,16 +387,16 @@ public class HiggsNode extends BosonVerticle implements Node {
 					});
 		});
 
-		return VertxFuture.of(promise.future());
+		return ContextualFuture.of(promise.future());
 	}
 
 	@Override
-	public VertxFuture<Void> announcePeer(PeerInfo peer, int expectedSequenceNumber, boolean persistent) {
+	public ContextualFuture<Void> announcePeer(PeerInfo peer, int expectedSequenceNumber, boolean persistent) {
 		Objects.requireNonNull(peer, "peer");
 		if (expectedSequenceNumber < -1)
 			throw new IllegalArgumentException("expectedSequenceNumber must be >= -1");
 		if (!isRunning())
-			return VertxFuture.failedFuture(new IllegalStateException("Node not running"));
+			return ContextualFuture.failedFuture(new IllegalStateException("Node not running"));
 
 		JsonObject body = new JsonObject();
 		if (expectedSequenceNumber >= 0)
@@ -428,26 +428,26 @@ public class HiggsNode extends BosonVerticle implements Node {
 					});
 		});
 
-		return VertxFuture.of(promise.future());
+		return ContextualFuture.of(promise.future());
 	}
 
 	@Override
-	public VertxFuture<Value> getValue(Id valueId) {
+	public ContextualFuture<Value> getValue(Id valueId) {
 		Objects.requireNonNull(valueId, "valueId");
 		Promise<Value> promise = Promise.promise();
 		runOnContext(v -> {
 			LocalData<Value> data = values.get(valueId);
 			promise.complete(data != null ? data.data() : null);
 		});
-		return VertxFuture.of(promise.future());
+		return ContextualFuture.of(promise.future());
 	}
 
 	@Override
-	public VertxFuture<Boolean> removeValue(Id valueId) {
+	public ContextualFuture<Boolean> removeValue(Id valueId) {
 		Objects.requireNonNull(valueId, "valueId");
 		Promise<Boolean> promise = Promise.promise();
 		runOnContext(v -> promise.complete(values.remove(valueId) != null));
-		return VertxFuture.of(promise.future());
+		return ContextualFuture.of(promise.future());
 	}
 
 	/**
@@ -480,7 +480,7 @@ public class HiggsNode extends BosonVerticle implements Node {
 	}
 
 	@Override
-	public VertxFuture<List<PeerInfo>> getPeers(Id peerId) {
+	public ContextualFuture<List<PeerInfo>> getPeers(Id peerId) {
 		Promise<List<PeerInfo>> promise = Promise.promise();
 		runOnContext(v -> {
 			List<PeerInfo> result = peers.getOrDefault(peerId, List.of()).stream()
@@ -489,28 +489,28 @@ public class HiggsNode extends BosonVerticle implements Node {
 					.toList();
 			promise.complete(result);
 		});
-		return VertxFuture.of(promise.future());
+		return ContextualFuture.of(promise.future());
 	}
 
 	@Override
-	public VertxFuture<Boolean> removePeers(Id peerId) {
+	public ContextualFuture<Boolean> removePeers(Id peerId) {
 		Promise<Boolean> promise = Promise.promise();
 		runOnContext(v -> promise.complete(peers.remove(peerId) != null));
-		return VertxFuture.of(promise.future());
+		return ContextualFuture.of(promise.future());
 	}
 
 	@Override
-	public VertxFuture<PeerInfo> getPeer(Id peerId, long fingerprint) {
+	public ContextualFuture<PeerInfo> getPeer(Id peerId, long fingerprint) {
 		Promise<PeerInfo> promise = Promise.promise();
 		runOnContext(v -> promise.complete(_getPeer(peerId, fingerprint)));
-		return VertxFuture.of(promise.future());
+		return ContextualFuture.of(promise.future());
 	}
 
 	@Override
-	public VertxFuture<Boolean> removePeer(Id peerId, long fingerprint) {
+	public ContextualFuture<Boolean> removePeer(Id peerId, long fingerprint) {
 		Promise<Boolean> promise = Promise.promise();
 		runOnContext(v -> promise.complete(_removePeer(peerId, fingerprint)));
-		return VertxFuture.of(promise.future());
+		return ContextualFuture.of(promise.future());
 	}
 
 	private PeerInfo _getPeer(Id peerId, long fingerprint) {
@@ -759,7 +759,7 @@ public class HiggsNode extends BosonVerticle implements Node {
 
 		if (ssl) {
 			options.setEnabledSecureTransportProtocols(Set.of("TLSv1.3"))
-					.setTrustOptions(TrustOptions.wrap(new HybridTrustManager(gatewayPeerId.toString(), gatewayPeerId.bytes())));
+					.setTrustOptions(TrustOptions.wrap(new HybridTrustManager(gatewayPeerId.toString(), gatewayPeerId.bytesUnsafe())));
 		}
 
 		webClient = WebClient.create(vertx, options);
