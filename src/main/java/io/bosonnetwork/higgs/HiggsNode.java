@@ -29,6 +29,7 @@ import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
 
@@ -44,6 +45,8 @@ import io.vertx.ext.web.client.HttpRequest;
 import io.vertx.ext.web.client.HttpResponse;
 import io.vertx.ext.web.client.WebClient;
 import io.vertx.ext.web.client.WebClientOptions;
+import org.jspecify.annotations.NullUnmarked;
+import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -78,17 +81,15 @@ import io.bosonnetwork.web.PaginatedResult;
  * (find/store value, find/announce peer) to a gateway service, and additionally exposes the
  * gateway's per-user persistent storage ({@link #getValue}, {@link #removeValue},
  * {@link #getPeers}, {@link #getPeer}, {@link #removePeers}, {@link #removePeer}). It keeps no
- * routing table or local storage, so it is cheap to create and suited to clients (mobile, CLI,
+ * routing table or local storage, so it is inexpensive to create and suited to clients (mobile, CLI,
  * embedded) that cannot run a full node.
  *
  * <h2>Authentication</h2>
- * Every request carries a short-lived {@link io.bosonnetwork.cwt.SignedCwt CWT} bearer token.
- * A node uses one of two mutually exclusive modes, selected at build time:
- * <ul>
- *   <li><b>User-key mode</b> ({@link Builder#userKey}): the client signs tokens directly as the user.</li>
- *   <li><b>Device mode</b> ({@link Builder#userId} + {@link Builder#deviceKey}): the client signs as a
- *       device acting on behalf of the user, setting the token's client id to the device id.</li>
- * </ul>
+ * Every request carries a short-lived {@link io.bosonnetwork.cwt.SignedCwt CWT} bearer token. The
+ * token is always signed by the device key ({@link Builder#deviceKey}, required), with the device id
+ * set as the token's client id. The acting user is identified by the token subject, configured at
+ * build time either directly via {@link Builder#userId} (the device acts on behalf of that user) or
+ * derived from a user key pair via {@link Builder#userKey}.
  *
  * <h2>Gateway binding</h2>
  * The target gateway is identified by its node id, peer id and URL ({@link Builder#gatewayNodeId},
@@ -98,7 +99,7 @@ import io.bosonnetwork.web.PaginatedResult;
  *
  * <h2>Lifecycle &amp; threading</h2>
  * Call {@link #start()} before issuing requests and {@link #stop()} when finished; requests made while
- * not running fail with {@link IllegalStateException}. Built on Vert.x — the returned
+ * not running fail with {@link IllegalStateException}. Built on Vert.x - the returned
  * {@link ContextualFuture}s complete on the caller's Vert.x context.
  *
  * <h2>Unsupported operations</h2>
@@ -118,26 +119,19 @@ public class HiggsNode implements Node {
 
 	private final Vertx vertx;
 
-	// The active signing identity used for access tokens and crypto operations:
-	// the user identity in user-key mode, or the device identity in device mode.
-	private final Identity identity;
-
-	// user identity
-	private final Identity userIdentity;
-	// or user id and device identity
 	private final Id userId;
 	private final Identity deviceIdentity;
 
-	private final Id gatewayNodeId;
+	private @Nullable Id gatewayNodeId;
 	private final Id gatewayPeerId;
 	private final URL gatewayUrl;
 
 	private LookupOption defaultLookupOption;
 
-	private String gatewayVersion;
-	private WebClient webClient;
+	private volatile @Nullable String gatewayVersion;
+	private @Nullable WebClient webClient;
 
-	private volatile AccessTokenCache tokenCache;
+	private volatile @Nullable AccessTokenCache tokenCache;
 
 	private final AtomicBoolean running;
 
@@ -145,39 +139,30 @@ public class HiggsNode implements Node {
 
 	private record AccessTokenCache(String token, long createdAt) {}
 
-	private HiggsNode(Vertx vertx, Signature.KeyPair userKey, Id gatewayNodeId, Id gatewayPeerId, URL gatewayUrl) {
-		this.vertx = vertx;
-		this.userIdentity = new CryptoIdentity(userKey);
-		this.userId = userIdentity.getId();
-		this.deviceIdentity = null;
-		this.gatewayNodeId = gatewayNodeId;
-		this.gatewayPeerId = gatewayPeerId;
-		this.gatewayUrl = gatewayUrl;
+	private HiggsNode(Builder builder) {
+		this.vertx = Objects.requireNonNull(builder.vertx, "Vert.x instance must be set");
+
+		this.userId = Objects.requireNonNull(builder.userId, "Either userId or userKey must be set");
+
+		Objects.requireNonNull(builder.deviceKey, "deviceKey must be set");
+		this.deviceIdentity = new CryptoIdentity(builder.deviceKey);
+
+		this.gatewayPeerId = Objects.requireNonNull(builder.gatewayPeerId, "gatewayPeerId must be set");
+		this.gatewayUrl = Objects.requireNonNull(builder.gatewayUrl, "gatewayUrl must be set");
+
 		this.defaultLookupOption = LookupOption.ARBITRARY;
-
-		this.identity = userIdentity;
-
 		this.running = new AtomicBoolean(false);
 	}
 
-	private HiggsNode(Vertx vertx, Id userId, Signature.KeyPair deviceKey, Id gatewayNodeId, Id gatewayPeerId, URL gatewayUrl) {
-		this.vertx = vertx;
-		this.userIdentity = null;
-		this.userId = userId;
-		this.deviceIdentity = new CryptoIdentity(deviceKey);
-		this.gatewayNodeId = gatewayNodeId;
-		this.gatewayPeerId = gatewayPeerId;
-		this.gatewayUrl = gatewayUrl;
-		this.defaultLookupOption = LookupOption.ARBITRARY;
-
-		this.identity = deviceIdentity;
-
-		this.running = new AtomicBoolean(false);
+	public String getGatewayInfo() {
+		return gatewayUrl + " @ " + gatewayPeerId +
+				(gatewayNodeId != null ? " @ " + gatewayNodeId : "") +
+				(gatewayVersion != null ? " : " + gatewayVersion : "N/A");
 	}
 
 	@Override
 	public Id getId() {
-		return identity.getId();
+		return deviceIdentity.getId();
 	}
 
 	/**
@@ -246,20 +231,21 @@ public class HiggsNode implements Node {
 
 		webClient = WebClient.create(vertx, options);
 
-		Future<Void> future = getGatewayInfo().compose(info -> {
-			Id nodeId = Id.of(info.getString("nodeId"));
-			if (!nodeId.equals(gatewayNodeId))
-				return Future.failedFuture(new HiggsException(HiggsException.NO_HTTP_STATUS, "Gateway node ID mismatch"));
+		Future<Void> future = fetchGatewayInfo().compose(info -> {
 			Id peerId = Id.of(info.getString("peerId"));
 			if (!peerId.equals(gatewayPeerId))
 				return Future.failedFuture(new HiggsException(HiggsException.NO_HTTP_STATUS, "Gateway peer ID mismatch"));
 
-			gatewayVersion = info.getString("version");
+			this.gatewayNodeId = Id.of(info.getString("nodeId"));
+
+			this.gatewayVersion = info.getString("version");
 			return Future.succeededFuture();
 		}).onFailure(e -> {
 			log.error("Failed to get gateway info", e);
-			webClient.close();
-			webClient = null;
+			if (webClient != null) {
+				webClient.close();
+				webClient = null;
+			}
 			running.set(false);
 		}).mapEmpty();
 
@@ -312,11 +298,12 @@ public class HiggsNode implements Node {
 	}
 
 	@Override
-	public ContextualFuture<Result<NodeInfo>> findNode(Id id, LookupOption option) {
+	public ContextualFuture<Result<NodeInfo>> findNode(Id id, @Nullable LookupOption option) {
 		Objects.requireNonNull(id, "id");
 		runningCheck();
 
 		final LookupOption lookupOption = option != null ? option : defaultLookupOption;
+		WebClient webClient = requireInitialized(this.webClient, "webClient");
 
 		Future<Result<NodeInfo>> future = webClient.get(API_VERSION_PREFIX + "/nodes/" + id)
 				.addQueryParam("mode", lookupOption.name().toLowerCase())
@@ -329,55 +316,55 @@ public class HiggsNode implements Node {
 								body.getJsonObject(Network.IPv4.name()).mapTo(NodeInfo.class) : null;
 						NodeInfo n6 = body.containsKey(Network.IPv6.name()) ?
 								body.getJsonObject(Network.IPv6.name()).mapTo(NodeInfo.class) : null;
-						if (n4 == null && n6 == null)
-							return Future.succeededFuture();
-						else
-							return Future.succeededFuture(Result.of(n4, n6));
+						return Future.succeededFuture(Result.of(n4, n6));
 					} else if (res.statusCode() == 404) {
-						return Future.succeededFuture();
+						return Future.succeededFuture(Result.<NodeInfo>empty());
 					} else {
 						return Future.failedFuture(wrapErrorResponseToException(res));
 					}
 				})
 				.recover(e -> {
+					if (e instanceof HiggsException he)
+						return Future.failedFuture(he);
 					log.error("Gateway request failed: {}", e.getMessage(), e);
-					return Future.failedFuture(e instanceof HiggsException he ? he :
-							new HiggsException("Gateway request failed", e));
+					return Future.failedFuture(new HiggsException("Gateway request failed", e));
 				});
 
 		return ContextualFuture.of(future);
 	}
 
 	@Override
-	public ContextualFuture<Value> findValue(Id id, int expectedSequenceNumber, LookupOption option) {
+	public ContextualFuture<Optional<Value>> findValue(Id id, int expectedSequenceNumber, @Nullable LookupOption option) {
 		Objects.requireNonNull(id, "id");
 		if (expectedSequenceNumber < -1)
 			throw new IllegalArgumentException("expectedSequenceNumber must be >= -1");
 		runningCheck();
 
 		final LookupOption lookupOption = option != null ? option : defaultLookupOption;
+		WebClient webClient = requireInitialized(this.webClient, "webClient");
 
 		HttpRequest<Buffer> request = webClient.get(API_VERSION_PREFIX + "/values/" + id);
 		request.addQueryParam("mode", lookupOption.name().toLowerCase());
 		if (expectedSequenceNumber >= 0)
 			request.addQueryParam("seq", String.valueOf(expectedSequenceNumber));
 
-		Future<Value> future = request.bearerTokenAuthentication(getAccessToken())
+		Future<Optional<Value>> future = request.bearerTokenAuthentication(getAccessToken())
 				.send()
 				.compose(res -> {
 					if (res.statusCode() == 200) {
 						JsonObject body = res.bodyAsJsonObject();
-						return Future.succeededFuture(body.mapTo(Value.class));
+						return Future.succeededFuture(Optional.of(body.mapTo(Value.class)));
 					} else if (res.statusCode() == 404) {
-						return Future.succeededFuture();
+						return Future.succeededFuture(Optional.<Value>empty());
 					} else {
 						return Future.failedFuture(wrapErrorResponseToException(res));
 					}
 				})
 				.recover((e) -> {
+					if (e instanceof HiggsException he)
+						return Future.failedFuture(he);
 					log.error("Gateway request failed: {}", e.getMessage(), e);
-					return Future.failedFuture(e instanceof HiggsException he ? he :
-							new HiggsException("Gateway request failed", e));
+					return Future.failedFuture(new HiggsException("Gateway request failed", e));
 				});
 
 		return ContextualFuture.of(future);
@@ -399,6 +386,7 @@ public class HiggsNode implements Node {
 			body.put("persistent", true);
 		body.put("value", value);
 
+		WebClient webClient = requireInitialized(this.webClient, "webClient");
 		Future<Void> future = webClient.post(API_VERSION_PREFIX + "/values")
 				.bearerTokenAuthentication(getAccessToken())
 				.sendJsonObject(body)
@@ -410,16 +398,17 @@ public class HiggsNode implements Node {
 					}
 				})
 				.recover(e -> {
+					if (e instanceof HiggsException he)
+						return Future.failedFuture(he);
 					log.error("Gateway request failed: {}", e.getMessage(), e);
-					return Future.failedFuture(e instanceof HiggsException he ? he :
-							new HiggsException("Gateway request failed", e));
+					return Future.failedFuture(new HiggsException("Gateway request failed", e));
 				});
 
 		return ContextualFuture.of(future);
 	}
 
 	@Override
-	public ContextualFuture<List<PeerInfo>> findPeer(Id id, int expectedSequenceNumber, int expectedCount, LookupOption option) {
+	public ContextualFuture<List<PeerInfo>> findPeer(Id id, int expectedSequenceNumber, int expectedCount, @Nullable LookupOption option) {
 		Objects.requireNonNull(id, "id");
 		if (expectedSequenceNumber < -1)
 			throw new IllegalArgumentException("expectedSequenceNumber must be >= -1");
@@ -428,6 +417,7 @@ public class HiggsNode implements Node {
 		runningCheck();
 
 		final LookupOption lookupOption = option != null ? option : defaultLookupOption;
+		WebClient webClient = requireInitialized(this.webClient, "webClient");
 
 		HttpRequest<Buffer> request = webClient.get(API_VERSION_PREFIX + "/peers/" + id);
 		request.addQueryParam("mode", lookupOption.name().toLowerCase());
@@ -450,15 +440,16 @@ public class HiggsNode implements Node {
 						}
 						return Future.succeededFuture(result);
 					} else if (res.statusCode() == 404) {
-						return Future.succeededFuture(List.of());
+						return Future.succeededFuture(List.<PeerInfo>of());
 					} else {
-						return Future.<List<PeerInfo>>failedFuture(wrapErrorResponseToException(res));
+						return Future.failedFuture(wrapErrorResponseToException(res));
 					}
 				})
 				.recover(e -> {
+					if (e instanceof HiggsException he)
+						return Future.failedFuture(he);
 					log.error("Gateway request failed: {}", e.getMessage(), e);
-					return Future.failedFuture(e instanceof HiggsException he ? he :
-							new HiggsException("Gateway request failed", e));
+					return Future.failedFuture(new HiggsException("Gateway request failed", e));
 				});
 
 
@@ -481,6 +472,7 @@ public class HiggsNode implements Node {
 			body.put("persistent", true);
 		body.put("peer", peer);
 
+		WebClient webClient = requireInitialized(this.webClient, "webClient");
 		Future<Void> future = webClient.post(API_VERSION_PREFIX + "/peers")
 				.bearerTokenAuthentication(getAccessToken())
 				.sendJsonObject(body)
@@ -491,36 +483,39 @@ public class HiggsNode implements Node {
 						return Future.failedFuture(wrapErrorResponseToException(res));
 				})
 				.recover((e) -> {
+					if (e instanceof HiggsException he)
+						return Future.failedFuture(he);
 					log.error("Gateway request failed: {}", e.getMessage(), e);
-					return Future.failedFuture(e instanceof HiggsException he ? he :
-							new HiggsException("Gateway request failed", e));
+					return Future.failedFuture(new HiggsException("Gateway request failed", e));
 				});
 
 		return ContextualFuture.of(future);
 	}
 
 	@Override
-	public ContextualFuture<Value> getValue(Id valueId) {
+	public ContextualFuture<Optional<Value>> getValue(Id valueId) {
 		Objects.requireNonNull(valueId, "valueId");
 		runningCheck();
 
-		Future<Value> future = webClient.get(API_VERSION_PREFIX + "/user/values/" + valueId)
+		WebClient webClient = requireInitialized(this.webClient, "webClient");
+		Future<Optional<Value>> future = webClient.get(API_VERSION_PREFIX + "/user/values/" + valueId)
 				.bearerTokenAuthentication(getAccessToken())
 				.send()
 				.compose(res -> {
 					if (res.statusCode() == 200) {
 						JsonObject body = res.bodyAsJsonObject();
-						return Future.succeededFuture(body.mapTo(Value.class));
+						return Future.succeededFuture(Optional.of(body.mapTo(Value.class)));
 					} else if (res.statusCode() == 404) {
-						return Future.succeededFuture();
+						return Future.succeededFuture(Optional.<Value>empty());
 					} else {
 						return Future.failedFuture(wrapErrorResponseToException(res));
 					}
 				})
 				.recover((e) -> {
+					if (e instanceof HiggsException he)
+						return Future.failedFuture(he);
 					log.error("Gateway request failed: {}", e.getMessage(), e);
-					return Future.failedFuture(e instanceof HiggsException he ? he :
-							new HiggsException("Gateway request failed", e));
+					return Future.failedFuture(new HiggsException("Gateway request failed", e));
 				});
 
 		return ContextualFuture.of(future);
@@ -534,6 +529,7 @@ public class HiggsNode implements Node {
 
 		runningCheck();
 
+		WebClient webClient = requireInitialized(this.webClient, "webClient");
 		HttpRequest<Buffer> request = webClient.get(API_VERSION_PREFIX + "/user/values");
 		if (page > 1 || pageSize != Long.MAX_VALUE) {
 			request.addQueryParam("page", Long.toString(page));
@@ -546,18 +542,19 @@ public class HiggsNode implements Node {
 				.compose(res -> {
 					if (res.statusCode() == 200) {
 						JsonObject body = res.bodyAsJsonObject();
-						return Future.succeededFuture(Json.objectMapper().convertValue(body.getMap(),
-								new TypeReference<PaginatedResult<Value>>() {}));
+						PaginatedResult<Value> result = Json.objectMapper().convertValue(body.getMap(), new TypeReference<>() {});
+						return Future.succeededFuture(result);
 					} else if (res.statusCode() == 404) {
-						return Future.succeededFuture();
+						return Future.succeededFuture(PaginatedResult.of(page, pageSize, 0, List.<Value>of()));
 					} else {
 						return Future.failedFuture(wrapErrorResponseToException(res));
 					}
 				})
 				.recover((e) -> {
+					if (e instanceof HiggsException he)
+						return Future.failedFuture(he);
 					log.error("Gateway request failed: {}", e.getMessage(), e);
-					return Future.failedFuture(e instanceof HiggsException he ? he :
-							new HiggsException("Gateway request failed", e));
+					return Future.failedFuture(new HiggsException("Gateway request failed", e));
 				});
 
 		return ContextualFuture.of(future);
@@ -568,6 +565,7 @@ public class HiggsNode implements Node {
 		Objects.requireNonNull(valueId, "valueId");
 		runningCheck();
 
+		WebClient webClient = requireInitialized(this.webClient, "webClient");
 		Future<Boolean> future = webClient.delete(API_VERSION_PREFIX + "/user/values/" + valueId)
 				.bearerTokenAuthentication(getAccessToken())
 				.send()
@@ -581,9 +579,10 @@ public class HiggsNode implements Node {
 					}
 				})
 				.recover((e) -> {
+					if (e instanceof HiggsException he)
+						return Future.failedFuture(he);
 					log.error("Gateway request failed: {}", e.getMessage(), e);
-					return Future.failedFuture(e instanceof HiggsException he ? he :
-							new HiggsException("Gateway request failed", e));
+					return Future.failedFuture(new HiggsException("Gateway request failed", e));
 				});
 
 		return ContextualFuture.of(future);
@@ -594,6 +593,7 @@ public class HiggsNode implements Node {
 		Objects.requireNonNull(peerId, "peerId");
 		runningCheck();
 
+		WebClient webClient = requireInitialized(this.webClient, "webClient");
 		Future<List<PeerInfo>> future = webClient.get(API_VERSION_PREFIX + "/user/peers/" + peerId)
 				.bearerTokenAuthentication(getAccessToken())
 				.send()
@@ -610,15 +610,16 @@ public class HiggsNode implements Node {
 						}
 						return Future.succeededFuture(result);
 					} else if (res.statusCode() == 404) {
-						return Future.succeededFuture(List.of());
+						return Future.succeededFuture(List.<PeerInfo>of());
 					} else {
-						return Future.<List<PeerInfo>>failedFuture(wrapErrorResponseToException(res));
+						return Future.failedFuture(wrapErrorResponseToException(res));
 					}
 				})
 				.recover(e -> {
+					if (e instanceof HiggsException he)
+						return Future.failedFuture(he);
 					log.error("Gateway request failed: {}", e.getMessage(), e);
-					return Future.failedFuture(e instanceof HiggsException he ? he :
-							new HiggsException("Gateway request failed", e));
+					return Future.failedFuture(new HiggsException("Gateway request failed", e));
 				});
 
 		return ContextualFuture.of(future);
@@ -632,6 +633,7 @@ public class HiggsNode implements Node {
 
 		runningCheck();
 
+		WebClient webClient = requireInitialized(this.webClient, "webClient");
 		HttpRequest<Buffer> request = webClient.get(API_VERSION_PREFIX + "/user/peers");
 		if (page > 1 || pageSize != Long.MAX_VALUE) {
 			request.addQueryParam("page", Long.toString(page));
@@ -644,18 +646,19 @@ public class HiggsNode implements Node {
 				.compose(res -> {
 					if (res.statusCode() == 200) {
 						JsonObject body = res.bodyAsJsonObject();
-						return Future.succeededFuture(Json.objectMapper().convertValue(body.getMap(),
-								new TypeReference<PaginatedResult<PeerInfo>>() {}));
+						PaginatedResult<PeerInfo> result = Json.objectMapper().convertValue(body.getMap(), new TypeReference<>() {});
+						return Future.succeededFuture(result);
 					} else if (res.statusCode() == 404) {
-						return Future.succeededFuture();
+						return Future.succeededFuture(PaginatedResult.of(page, pageSize, 0, List.<PeerInfo>of()));
 					} else {
 						return Future.failedFuture(wrapErrorResponseToException(res));
 					}
 				})
 				.recover(e -> {
+					if (e instanceof HiggsException he)
+						return Future.failedFuture(he);
 					log.error("Gateway request failed: {}", e.getMessage(), e);
-					return Future.failedFuture(e instanceof HiggsException he ? he :
-							new HiggsException("Gateway request failed", e));
+					return Future.failedFuture(new HiggsException("Gateway request failed", e));
 				});
 
 		return ContextualFuture.of(future);
@@ -666,6 +669,7 @@ public class HiggsNode implements Node {
 		Objects.requireNonNull(peerId, "peerId");
 		runningCheck();
 
+		WebClient webClient = requireInitialized(this.webClient, "webClient");
 		Future<Boolean> future = webClient.delete(API_VERSION_PREFIX + "/user/peers/" + peerId)
 				.bearerTokenAuthentication(getAccessToken())
 				.send()
@@ -679,35 +683,38 @@ public class HiggsNode implements Node {
 					}
 				})
 				.recover((e) -> {
+					if (e instanceof HiggsException he)
+						return Future.failedFuture(he);
 					log.error("Gateway request failed: {}", e.getMessage(), e);
-					return Future.failedFuture(e instanceof HiggsException he ? he :
-							new HiggsException("Gateway request failed", e));
+					return Future.failedFuture(new HiggsException("Gateway request failed", e));
 				});
 
 		return ContextualFuture.of(future);
 	}
 
 	@Override
-	public ContextualFuture<PeerInfo> getPeer(Id peerId, long fingerprint) {
+	public ContextualFuture<Optional<PeerInfo>> getPeer(Id peerId, long fingerprint) {
 		Objects.requireNonNull(peerId, "peerId");
 		runningCheck();
 
-		Future<PeerInfo> future = webClient.get(API_VERSION_PREFIX + "/user/peers/" + peerId + "/" + fingerprint)
+		WebClient webClient = requireInitialized(this.webClient, "webClient");
+		Future<Optional<PeerInfo>> future = webClient.get(API_VERSION_PREFIX + "/user/peers/" + peerId + "/" + fingerprint)
 				.bearerTokenAuthentication(getAccessToken())
 				.send()
 				.compose(res -> {
 					if (res.statusCode() == 200) {
-						return Future.succeededFuture(res.bodyAsJson(PeerInfo.class));
+						return Future.succeededFuture(Optional.of(res.bodyAsJson(PeerInfo.class)));
 					} else if (res.statusCode() == 404) {
-						return Future.succeededFuture();
+						return Future.succeededFuture(Optional.<PeerInfo>empty());
 					} else {
 						return Future.failedFuture(wrapErrorResponseToException(res));
 					}
 				})
 				.recover(e -> {
+					if (e instanceof HiggsException he)
+						return Future.failedFuture(he);
 					log.error("Gateway request failed: {}", e.getMessage(), e);
-					return Future.failedFuture(e instanceof HiggsException he ? he :
-							new HiggsException("Gateway request failed", e));
+					return Future.failedFuture(new HiggsException("Gateway request failed", e));
 				});
 
 		return ContextualFuture.of(future);
@@ -718,6 +725,7 @@ public class HiggsNode implements Node {
 		Objects.requireNonNull(peerId, "peerId");
 		runningCheck();
 
+		WebClient webClient = requireInitialized(this.webClient, "webClient");
 		Future<Boolean> future = webClient.delete(API_VERSION_PREFIX + "/user/peers/" + peerId + "/" + fingerprint)
 				.bearerTokenAuthentication(getAccessToken())
 				.send()
@@ -731,9 +739,10 @@ public class HiggsNode implements Node {
 					}
 				})
 				.recover((e) -> {
+					if (e instanceof HiggsException he)
+						return Future.failedFuture(he);
 					log.error("Gateway request failed: {}", e.getMessage(), e);
-					return Future.failedFuture(e instanceof HiggsException he ? he :
-							new HiggsException("Gateway request failed", e));
+					return Future.failedFuture(new HiggsException("Gateway request failed", e));
 				});
 
 		return ContextualFuture.of(future);
@@ -742,21 +751,21 @@ public class HiggsNode implements Node {
 	@Override
 	public byte[] sign(byte[] data) {
 		Objects.requireNonNull(data, "data");
-		return identity.sign(data);
+		return deviceIdentity.sign(data);
 	}
 
 	@Override
 	public boolean verify(byte[] data, byte[] signature) {
 		Objects.requireNonNull(data, "data");
 		Objects.requireNonNull(signature, "signature");
-		return identity.verify(data, signature);
+		return deviceIdentity.verify(data, signature);
 	}
 
 	@Override
 	public byte[] encrypt(Id recipient, byte[] data) throws CryptoException {
 		Objects.requireNonNull(recipient, "recipient");
 		Objects.requireNonNull(data, "data");
-		return identity.encrypt(recipient, data);
+		return deviceIdentity.encrypt(recipient, data);
 	}
 
 	@Override
@@ -764,14 +773,14 @@ public class HiggsNode implements Node {
 		Objects.requireNonNull(recipient, "recipient");
 		Objects.requireNonNull(nonce, "nonce");
 		Objects.requireNonNull(data, "data");
-		return identity.encrypt(recipient, nonce, data);
+		return deviceIdentity.encrypt(recipient, nonce, data);
 	}
 
 	@Override
 	public byte[] decrypt(Id sender, byte[] data) throws CryptoException {
 		Objects.requireNonNull(sender, "sender");
 		Objects.requireNonNull(data, "data");
-		return identity.decrypt(sender, data);
+		return deviceIdentity.decrypt(sender, data);
 	}
 
 	@Override
@@ -779,24 +788,25 @@ public class HiggsNode implements Node {
 		Objects.requireNonNull(sender, "sender");
 		Objects.requireNonNull(nonce, "nonce");
 		Objects.requireNonNull(data, "data");
-		return identity.decrypt(sender, nonce, data);
+		return deviceIdentity.decrypt(sender, nonce, data);
 	}
 
 	@Override
 	public CryptoContext createCryptoContext(Id id) throws CryptoException {
 		Objects.requireNonNull(id, "id");
-		return identity.createCryptoContext(id);
+		return deviceIdentity.createCryptoContext(id);
 	}
 
 	@Override
-	public <T> T unwrap(Class<T> clazz) {
+	public <T> @Nullable T unwrap(Class<T> clazz) {
 		if (clazz.isInstance(vertx))
 			return clazz.cast(vertx);
 
 		return null;
 	}
 
-	private Future<JsonObject> getGatewayInfo() {
+	private Future<JsonObject> fetchGatewayInfo() {
+		WebClient webClient = requireInitialized(this.webClient, "webClient");
 		return webClient.get(API_VERSION_PREFIX + "/info")
 				.bearerTokenAuthentication(getAccessToken())
 				.send()
@@ -811,15 +821,14 @@ public class HiggsNode implements Node {
 	private String getAccessToken() {
 		AccessTokenCache tc = tokenCache;
 		if (tc == null || System.currentTimeMillis() - tc.createdAt > ACCESS_TOKEN_TIMEOUT) {
-			SignedCwt.Builder builder = SignedCwt.builder(identity)
+			SignedCwt.Builder builder = SignedCwt.builder(deviceIdentity)
 					.subject(userId)
 					.audience(gatewayPeerId)
 					.expiration(Duration.ofMillis(ACCESS_TOKEN_TIMEOUT + 1000 * 60))
 					.notBeforeNow()
 					.issuedAtNow()
-					.scope(AccessScope.CLIENT.toString());
-			if (deviceIdentity != null)
-				builder.clientId(deviceIdentity.getId());
+					.scope(AccessScope.CLIENT.toString())
+					.clientId(deviceIdentity.getId());
 
 			String token = builder.buildToString();
 			tc = new AccessTokenCache(token, System.currentTimeMillis());
@@ -859,27 +868,31 @@ public class HiggsNode implements Node {
 	/**
 	 * Fluent builder for {@link HiggsNode}.
 	 * <p>
-	 * Exactly one authentication mode must be configured: either {@link #userKey(Signature.KeyPair)
-	 * userKey} (user-key mode), or {@link #userId(Id) userId} together with
-	 * {@link #deviceKey(Signature.KeyPair) deviceKey} (device mode). The gateway coordinates
-	 * {@link #gatewayNodeId(Id) gatewayNodeId}, {@link #gatewayPeerId(Id) gatewayPeerId} and
-	 * {@link #gatewayUrl(URL) gatewayUrl} are all required. {@link #build()} validates the
-	 * configuration and throws {@link IllegalStateException} if anything required is missing.
+	 * A {@link #deviceKey(Signature.KeyPair) deviceKey} is always required: it signs every token, with
+	 * the device id set as the token's client id. The acting user must also be supplied, either
+	 * directly via {@link #userId(Id) userId} or derived from a user key pair via
+	 * {@link #userKey(Signature.KeyPair) userKey}. The gateway coordinates
+	 * {@link #gatewayPeerId(Id) gatewayPeerId} and {@link #gatewayUrl(URL) gatewayUrl} are
+	 * all required. {@link #build()} validates the configuration and throws {@link IllegalStateException}
+	 * if anything required is missing.
 	 * A {@link Vertx} instance may be supplied via {@link #vertx(Vertx)}. Not thread-safe.
 	 */
+	@NullUnmarked
 	public static class Builder {
 		private Vertx vertx;
-		// user key
-		private Signature.KeyPair userKey;
-		// or user id and device key
+		// user id
 		private Id userId;
+		// or user key
+		@SuppressWarnings("unused")
+		private Signature.KeyPair userKey;
 		private Signature.KeyPair deviceKey;
-		// gateway id and url
-		private Id gatewayNodeId;
+		// gateway peer id and url
 		private Id gatewayPeerId;
 		private URL gatewayUrl;
 
 		private Builder() {
+			// Try to autoconfigure the Vert.x instance if the builder is created within a Vert.x context.
+			this.vertx = Vertx.currentContext() != null ? Vertx.currentContext().owner() : null;
 		}
 
 		/**
@@ -895,8 +908,23 @@ public class HiggsNode implements Node {
 		}
 
 		/**
-		 * Selects user-key mode using the given user key pair (the client signs tokens as the user).
-		 * Mutually exclusive with device mode ({@link #userId}/{@link #deviceKey}).
+		 * Sets the acting user id directly. The configured {@link #deviceKey} signs tokens on behalf
+		 * of this user. Clears any previously set {@link #userKey}.
+		 *
+		 * @param userId the user id (must not be {@code null})
+		 * @return this builder
+		 */
+		public Builder userId(Id userId) {
+			Objects.requireNonNull(userId, "userId");
+			this.userId = userId;
+			this.userKey = null;
+			return this;
+		}
+
+		/**
+		 * Sets the acting user from a user key pair: the user id is derived from the key's public key.
+		 * A convenience alternative to {@link #userId(Id)} when the user key pair is available. Note
+		 * that the device key, not this key, signs the tokens.
 		 *
 		 * @param key the user key pair (must not be {@code null})
 		 * @return this builder
@@ -904,11 +932,12 @@ public class HiggsNode implements Node {
 		public Builder userKey(Signature.KeyPair key) {
 			Objects.requireNonNull(key, "key");
 			this.userKey = key;
+			this.userId = Id.of(key.publicKey().bytes());
 			return this;
 		}
 
 		/**
-		 * Selects user-key mode from an encoded private key string.
+		 * Sets the acting user from an encoded user private key string (see {@link #userKey(Signature.KeyPair)}).
 		 *
 		 * @param privateKey the user private key, either a {@code 0x}-prefixed hex string or a Base58 string
 		 * @return this builder
@@ -920,7 +949,7 @@ public class HiggsNode implements Node {
 		}
 
 		/**
-		 * Selects user-key mode from a raw private key.
+		 * Sets the acting user from a raw user private key (see {@link #userKey(Signature.KeyPair)}).
 		 *
 		 * @param privateKey the user private key bytes (must be {@link Signature.PrivateKey#BYTES} long)
 		 * @return this builder
@@ -935,21 +964,8 @@ public class HiggsNode implements Node {
 		}
 
 		/**
-		 * Sets the user id for device mode. Used together with {@link #deviceKey}: the device signs
-		 * tokens on behalf of this user.
-		 *
-		 * @param userId the user id (must not be {@code null})
-		 * @return this builder
-		 */
-		public Builder userId(Id userId) {
-			Objects.requireNonNull(userId, "userId");
-			this.userId = userId;
-			return this;
-		}
-
-		/**
-		 * Selects device mode using the given device key pair. Used together with {@link #userId}.
-		 * Mutually exclusive with user-key mode ({@link #userKey}).
+		 * Sets the device key pair (required). The device key signs every token, with the device id
+		 * set as the token's client id.
 		 *
 		 * @param key the device key pair (must not be {@code null})
 		 * @return this builder
@@ -961,7 +977,7 @@ public class HiggsNode implements Node {
 		}
 
 		/**
-		 * Selects device mode from an encoded private key string.
+		 * Sets the device key from an encoded private key string (see {@link #deviceKey(Signature.KeyPair)}).
 		 *
 		 * @param privateKey the device private key, either a {@code 0x}-prefixed hex string or a Base58 string
 		 * @return this builder
@@ -973,7 +989,7 @@ public class HiggsNode implements Node {
 		}
 
 		/**
-		 * Selects device mode from a raw private key.
+		 * Sets the device key from a raw private key (see {@link #deviceKey(Signature.KeyPair)}).
 		 *
 		 * @param privateKey the device private key bytes (must be {@link Signature.PrivateKey#BYTES} long)
 		 * @return this builder
@@ -985,19 +1001,6 @@ public class HiggsNode implements Node {
 				throw new IllegalArgumentException("Invalid private key");
 
 			return deviceKey(Signature.KeyPair.fromPrivateKey(privateKey));
-		}
-
-		/**
-		 * Sets the expected node id of the target gateway. Verified against the gateway's
-		 * {@code /info} response on {@link HiggsNode#start()}.
-		 *
-		 * @param id the gateway node id (must not be {@code null})
-		 * @return this builder
-		 */
-		public Builder gatewayNodeId(Id id) {
-			Objects.requireNonNull(id, "gatewayNodeId");
-			this.gatewayNodeId = id;
-			return this;
 		}
 
 		/**
@@ -1048,31 +1051,20 @@ public class HiggsNode implements Node {
 		 * Validates the configuration and builds the {@link HiggsNode}.
 		 *
 		 * @return the configured node
-		 * @throws IllegalStateException if no authentication mode is configured (neither
-		 *         {@code userKey} nor {@code deviceKey}), if {@code deviceKey} is used without a
-		 *         {@code userId}, or if any of {@code gatewayNodeId}, {@code gatewayPeerId} or
-		 *         {@code gatewayUrl} is missing
+		 * @throws IllegalStateException if {@code deviceKey} is missing, if neither {@code userId} nor
+		 *         {@code userKey} is set, or if any of {@code gatewayPeerId} or {@code gatewayUrl} is missing
 		 */
 		public HiggsNode build() {
-			if (userKey == null && deviceKey == null)
-				throw new IllegalStateException("Either userKey (user mode) or deviceKey (device mode) must be set");
-
-			if (userKey == null && userId == null)
-				throw new IllegalStateException("userId is required in device mode (when userKey is not set)");
-
-			if (gatewayNodeId == null)
-				throw new IllegalStateException("Gateway node ID not set");
-
-			if (gatewayPeerId == null)
-				throw new IllegalStateException("Gateway peer ID not set");
-
-			if (gatewayUrl == null)
-				throw new IllegalStateException("Gateway URL not set");
-
-			if (userKey != null)
-				return new HiggsNode(vertx, userKey, gatewayNodeId, gatewayPeerId, gatewayUrl);
-			else
-				return new HiggsNode(vertx, userId, deviceKey, gatewayNodeId, gatewayPeerId, gatewayUrl);
+			try {
+				return new HiggsNode(this);
+			} catch (NullPointerException | IllegalArgumentException e) {
+				throw new IllegalStateException("Invalid HiggsNode configuration: " + e.getMessage(), e);
+			}
 		}
+	}
+
+	@SuppressWarnings("SameParameterValue")
+	private static <T> T requireInitialized(@Nullable T obj, String name) {
+		return Objects.requireNonNull(obj, "INTERNAL ERROR: inconsistent state - " + name + " not initialized");
 	}
 }

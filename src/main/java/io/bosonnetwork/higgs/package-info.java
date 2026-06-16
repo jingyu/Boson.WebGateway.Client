@@ -21,7 +21,7 @@
  */
 
 /**
- * Higgs — a lightweight Boson {@link io.bosonnetwork.Node Node} client backed by a Web Gateway.
+ * Higgs - a lightweight Boson {@link io.bosonnetwork.Node Node} client backed by a Web Gateway.
  * <p>
  * This package provides a thin client that implements the {@link io.bosonnetwork.Node} API by
  * talking to a Boson Web Gateway over its authenticated HTTP/REST interface, instead of joining
@@ -37,11 +37,9 @@
  *
  * <h2>Authentication</h2>
  * Requests are authenticated with short-lived {@link io.bosonnetwork.cwt.SignedCwt CWT} bearer
- * tokens, minted in one of two mutually exclusive modes:
- * <ul>
- *   <li><b>User-key mode</b> — the client signs tokens directly as the user.</li>
- *   <li><b>Device mode</b> — the client signs as a device acting on behalf of a user.</li>
- * </ul>
+ * tokens. Each token is signed by the client's device key (always required), with the device id as
+ * the token's client id, on behalf of the acting user (supplied as a user id, or derived from a
+ * user key pair).
  *
  * <h2>Gateway binding</h2>
  * A client is bound to a specific gateway by its node id, peer id and URL; on
@@ -57,4 +55,7 @@
  * @see io.bosonnetwork.higgs.HiggsNode
  * @see io.bosonnetwork.higgs.HiggsException
  */
+@NullMarked
 package io.bosonnetwork.higgs;
+
+import org.jspecify.annotations.NullMarked;

@@ -22,6 +22,8 @@
 
 package io.bosonnetwork.higgs;
 
+import org.jspecify.annotations.Nullable;
+
 import io.bosonnetwork.BosonException;
 
 /**
@@ -51,7 +53,7 @@ public class HiggsException extends BosonException {
 	 * @param status  the HTTP status code returned by the gateway
 	 * @param message the detail message (typically the response body)
 	 */
-	public HiggsException(int status, String message) {
+	public HiggsException(int status, @Nullable String message) {
 		super(message);
 		this.status = status;
 	}
@@ -63,7 +65,7 @@ public class HiggsException extends BosonException {
 	 * @param message the detail message
 	 * @param cause   the underlying cause
 	 */
-	public HiggsException(int status, String message, Throwable cause) {
+	public HiggsException(int status, @Nullable String message, @Nullable Throwable cause) {
 		super(message, cause);
 		this.status = status;
 	}
@@ -75,7 +77,7 @@ public class HiggsException extends BosonException {
 	 * @param message the detail message
 	 * @param cause   the underlying cause
 	 */
-	public HiggsException(String message, Throwable cause) {
+	public HiggsException(@Nullable String message, @Nullable Throwable cause) {
 		super(message, cause);
 		this.status = NO_HTTP_STATUS;
 	}
@@ -86,7 +88,7 @@ public class HiggsException extends BosonException {
 	 *
 	 * @param cause the underlying cause
 	 */
-	public HiggsException(Throwable cause) {
+	public HiggsException(@Nullable Throwable cause) {
 		super(cause);
 		this.status = NO_HTTP_STATUS;
 	}
