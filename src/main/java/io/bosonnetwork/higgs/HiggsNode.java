@@ -798,11 +798,11 @@ public class HiggsNode implements Node {
 	}
 
 	@Override
-	public <T> @Nullable T unwrap(Class<T> clazz) {
+	public <T> Optional<T> unwrap(Class<T> clazz) {
 		if (clazz.isInstance(vertx))
-			return clazz.cast(vertx);
+			return Optional.of(clazz.cast(vertx));
 
-		return null;
+		return Optional.empty();
 	}
 
 	private Future<JsonObject> fetchGatewayInfo() {
