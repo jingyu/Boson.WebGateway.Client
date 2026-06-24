@@ -55,11 +55,9 @@ import io.bosonnetwork.CryptoContext;
 import io.bosonnetwork.Id;
 import io.bosonnetwork.Identity;
 import io.bosonnetwork.LookupOption;
-import io.bosonnetwork.Network;
 import io.bosonnetwork.Node;
 import io.bosonnetwork.NodeInfo;
 import io.bosonnetwork.PeerInfo;
-import io.bosonnetwork.Result;
 import io.bosonnetwork.Value;
 import io.bosonnetwork.crypto.CryptoException;
 import io.bosonnetwork.crypto.CryptoIdentity;
@@ -173,7 +171,7 @@ public class HiggsNode implements Node {
 	 *           {@link UnsupportedOperationException}.
 	 */
 	@Override
-	public Result<NodeInfo> getNodeInfo() {
+	public Optional<NodeInfo> getNodeInfo() {
 		throw new UnsupportedOperationException("getNodeInfo");
 	}
 
@@ -298,27 +296,23 @@ public class HiggsNode implements Node {
 	}
 
 	@Override
-	public ContextualFuture<Result<NodeInfo>> findNode(Id id, @Nullable LookupOption option) {
+	public ContextualFuture<Optional<NodeInfo>> findNode(Id id, @Nullable LookupOption option) {
 		Objects.requireNonNull(id, "id");
 		runningCheck();
 
 		final LookupOption lookupOption = option != null ? option : defaultLookupOption;
 		WebClient webClient = requireInitialized(this.webClient, "webClient");
 
-		Future<Result<NodeInfo>> future = webClient.get(API_VERSION_PREFIX + "/nodes/" + id)
+		Future<Optional<NodeInfo>> future = webClient.get(API_VERSION_PREFIX + "/nodes/" + id)
 				.addQueryParam("mode", lookupOption.name().toLowerCase())
 				.bearerTokenAuthentication(getAccessToken())
 				.send()
 				.compose(res -> {
 					if (res.statusCode() == 200) {
-						JsonObject body = res.bodyAsJsonObject();
-						NodeInfo n4 = body.containsKey(Network.IPv4.name()) ?
-								body.getJsonObject(Network.IPv4.name()).mapTo(NodeInfo.class) : null;
-						NodeInfo n6 = body.containsKey(Network.IPv6.name()) ?
-								body.getJsonObject(Network.IPv6.name()).mapTo(NodeInfo.class) : null;
-						return Future.succeededFuture(Result.of(n4, n6));
+						NodeInfo ni = res.bodyAsJson(NodeInfo.class);
+						return Future.succeededFuture(Optional.of(ni));
 					} else if (res.statusCode() == 404) {
-						return Future.succeededFuture(Result.<NodeInfo>empty());
+						return Future.succeededFuture(Optional.<NodeInfo>empty());
 					} else {
 						return Future.failedFuture(wrapErrorResponseToException(res));
 					}
