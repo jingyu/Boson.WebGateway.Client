@@ -309,7 +309,7 @@ public class HiggsNode implements Node {
 				.send()
 				.compose(res -> {
 					if (res.statusCode() == 200) {
-						NodeInfo ni = res.bodyAsJson(NodeInfo.class);
+						NodeInfo ni = requireBody(res.bodyAsJson(NodeInfo.class));
 						return Future.succeededFuture(Optional.of(ni));
 					} else if (res.statusCode() == 404) {
 						return Future.succeededFuture(Optional.<NodeInfo>empty());
@@ -346,7 +346,7 @@ public class HiggsNode implements Node {
 				.send()
 				.compose(res -> {
 					if (res.statusCode() == 200) {
-						JsonObject body = res.bodyAsJsonObject();
+						JsonObject body = requireBody(res.bodyAsJsonObject());
 						return Future.succeededFuture(Optional.of(body.mapTo(Value.class)));
 					} else if (res.statusCode() == 404) {
 						return Future.succeededFuture(Optional.<Value>empty());
@@ -423,7 +423,7 @@ public class HiggsNode implements Node {
 				.send()
 				.compose(res -> {
 					if (res.statusCode() == 200) {
-						JsonArray body = res.bodyAsJsonArray();
+						JsonArray body = requireBody(res.bodyAsJsonArray());
 						List<PeerInfo> result = new ArrayList<>(body.size());
 						for (Object o : body) {
 							// Fail the future on a malformed element rather than throwing a checked
@@ -497,7 +497,7 @@ public class HiggsNode implements Node {
 				.send()
 				.compose(res -> {
 					if (res.statusCode() == 200) {
-						JsonObject body = res.bodyAsJsonObject();
+						JsonObject body = requireBody(res.bodyAsJsonObject());
 						return Future.succeededFuture(Optional.of(body.mapTo(Value.class)));
 					} else if (res.statusCode() == 404) {
 						return Future.succeededFuture(Optional.<Value>empty());
@@ -535,7 +535,7 @@ public class HiggsNode implements Node {
 				.send()
 				.compose(res -> {
 					if (res.statusCode() == 200) {
-						JsonObject body = res.bodyAsJsonObject();
+						JsonObject body = requireBody(res.bodyAsJsonObject());
 						PaginatedResult<Value> result = Json.objectMapper().convertValue(body.getMap(), new TypeReference<>() {});
 						return Future.succeededFuture(result);
 					} else if (res.statusCode() == 404) {
@@ -593,7 +593,7 @@ public class HiggsNode implements Node {
 				.send()
 				.compose(res -> {
 					if (res.statusCode() == 200) {
-						JsonArray body = res.bodyAsJsonArray();
+						JsonArray body = requireBody(res.bodyAsJsonArray());
 						List<PeerInfo> result = new ArrayList<>(body.size());
 						for (Object o : body) {
 							// Fail the future on a malformed element rather than throwing a checked
@@ -639,7 +639,7 @@ public class HiggsNode implements Node {
 				.send()
 				.compose(res -> {
 					if (res.statusCode() == 200) {
-						JsonObject body = res.bodyAsJsonObject();
+						JsonObject body = requireBody(res.bodyAsJsonObject());
 						PaginatedResult<PeerInfo> result = Json.objectMapper().convertValue(body.getMap(), new TypeReference<>() {});
 						return Future.succeededFuture(result);
 					} else if (res.statusCode() == 404) {
@@ -697,7 +697,7 @@ public class HiggsNode implements Node {
 				.send()
 				.compose(res -> {
 					if (res.statusCode() == 200) {
-						return Future.succeededFuture(Optional.of(res.bodyAsJson(PeerInfo.class)));
+						return Future.succeededFuture(Optional.of(requireBody(res.bodyAsJson(PeerInfo.class))));
 					} else if (res.statusCode() == 404) {
 						return Future.succeededFuture(Optional.<PeerInfo>empty());
 					} else {
@@ -1060,5 +1060,9 @@ public class HiggsNode implements Node {
 	@SuppressWarnings("SameParameterValue")
 	private static <T> T requireInitialized(@Nullable T obj, String name) {
 		return Objects.requireNonNull(obj, "INTERNAL ERROR: inconsistent state - " + name + " not initialized");
+	}
+
+	private static <T> T requireBody(@Nullable T body) {
+		return Objects.requireNonNull(body, "Gateway returned a successful response with an empty body");
 	}
 }
