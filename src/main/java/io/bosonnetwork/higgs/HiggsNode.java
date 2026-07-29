@@ -64,6 +64,11 @@ import io.bosonnetwork.crypto.CryptoIdentity;
 import io.bosonnetwork.crypto.HybridTrustManager;
 import io.bosonnetwork.crypto.Signature;
 import io.bosonnetwork.cwt.SignedCwt;
+import io.bosonnetwork.higgs.exceptions.GatewayTimeoutException;
+import io.bosonnetwork.higgs.exceptions.HiggsException;
+import io.bosonnetwork.higgs.exceptions.RateLimitException;
+import io.bosonnetwork.higgs.exceptions.ServiceBusyException;
+import io.bosonnetwork.higgs.exceptions.UnauthorizedException;
 import io.bosonnetwork.json.Json;
 import io.bosonnetwork.service.AccessScope;
 import io.bosonnetwork.utils.Base58;
@@ -833,21 +838,21 @@ public class HiggsNode implements Node {
 	}
 
 	private HiggsException wrapErrorResponseToException(HttpResponse<Buffer> res) {
-		String body = res.bodyAsString();
-		if (res.statusCode() == 401) {
-			// noinspection LoggingSimilarMessage
-			log.debug("HTTP status: {}, Unauthorized. {}", res.statusCode(), body);
-		} else if (res.statusCode() == 429) {
-			// noinspection LoggingSimilarMessage
-			log.debug("HTTP status: {}, Too Many Requests. {}", res.statusCode(), body);
-		} else if (res.statusCode() == 504) {
-			log.debug("HTTP status: {}, Gateway timeout. {}", res.statusCode(), body);
-		} else {
-			// noinspection LoggingSimilarMessage
-			log.error("HTTP status: {}, {}", res.statusCode(), body);
-		}
+		HiggsException error = HiggsException.fromResponse(res);
 
-		return new HiggsException(res.statusCode(), body);
+		// Conditions the caller is expected to meet in normal operation - an expired token, a
+		// throttle, a shed request, a timed-out lookup - are logged at debug. Logging them at error
+		// level would flood the log at exactly the moment a client is already backing off, and would
+		// train users of this library to ignore the level that real faults use.
+		if (error instanceof UnauthorizedException || error instanceof RateLimitException
+				|| error instanceof ServiceBusyException || error instanceof GatewayTimeoutException)
+			log.debug("HTTP status: {}, {}: {}", error.getStatus(),
+					error.getClass().getSimpleName(), error.getMessage());
+		else
+			log.error("HTTP status: {}, {}: {}", error.getStatus(),
+					error.getClass().getSimpleName(), error.getMessage());
+
+		return error;
 	}
 
 	/**

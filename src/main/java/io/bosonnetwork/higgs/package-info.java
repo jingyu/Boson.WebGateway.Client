@@ -48,12 +48,16 @@
  * certificate to its peer id) before any request is issued.
  *
  * <h2>Errors</h2>
- * Failures are reported as {@link io.bosonnetwork.higgs.HiggsException}, which carries the HTTP
- * status of a gateway error response, or {@link io.bosonnetwork.higgs.HiggsException#NO_HTTP_STATUS}
- * for transport- or client-side failures.
+ * Failures are reported as {@link io.bosonnetwork.higgs.exceptions.HiggsException} or one of its
+ * status-specific subclasses in {@link io.bosonnetwork.higgs.exceptions} (for example
+ * {@link io.bosonnetwork.higgs.exceptions.RateLimitException} or
+ * {@link io.bosonnetwork.higgs.exceptions.PreconditionFailedException}), so callers can react by
+ * catching the specific type rather than branching on a status code. Every exception preserves the
+ * HTTP status and the gateway's response body; a transport- or client-side failure with no HTTP
+ * response carries {@link io.bosonnetwork.higgs.exceptions.HiggsException#NO_HTTP_STATUS} instead.
  *
  * @see io.bosonnetwork.higgs.HiggsNode
- * @see io.bosonnetwork.higgs.HiggsException
+ * @see io.bosonnetwork.higgs.exceptions
  */
 @NullMarked
 package io.bosonnetwork.higgs;
