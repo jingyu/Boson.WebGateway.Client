@@ -52,6 +52,7 @@ import org.slf4j.LoggerFactory;
 
 import io.bosonnetwork.ConnectionStatusListener;
 import io.bosonnetwork.CryptoContext;
+import io.bosonnetwork.AnnounceResult;
 import io.bosonnetwork.Id;
 import io.bosonnetwork.Identity;
 import io.bosonnetwork.LookupOption;
@@ -220,6 +221,8 @@ public class HiggsNode implements Node {
 		if (!running.compareAndSet(false, true))
 			return ContextualFuture.failedFuture(new IllegalStateException("Already started"));
 
+		Json.initializeBosonJsonModule();
+
 		boolean ssl = gatewayUrl.getProtocol().equals("https");
 		WebClientOptions options = new WebClientOptions()
 				.setSsl(ssl)
@@ -351,8 +354,8 @@ public class HiggsNode implements Node {
 				.send()
 				.compose(res -> {
 					if (res.statusCode() == 200) {
-						JsonObject body = requireBody(res.bodyAsJsonObject());
-						return Future.succeededFuture(Optional.of(body.mapTo(Value.class)));
+						Value value = requireBody(res.bodyAsJson(Value.class));
+						return Future.succeededFuture(Optional.of(value));
 					} else if (res.statusCode() == 404) {
 						return Future.succeededFuture(Optional.<Value>empty());
 					} else {
@@ -370,7 +373,7 @@ public class HiggsNode implements Node {
 	}
 
 	@Override
-	public ContextualFuture<Void> storeValue(Value value, int expectedSequenceNumber, boolean persistent) {
+	public ContextualFuture<AnnounceResult> storeValue(Value value, int expectedSequenceNumber, boolean persistent) {
 		Objects.requireNonNull(value, "value");
 		if (expectedSequenceNumber < -1)
 			throw new IllegalArgumentException("expectedSequenceNumber must be >= -1");
@@ -386,12 +389,13 @@ public class HiggsNode implements Node {
 		body.put("value", value);
 
 		WebClient webClient = requireInitialized(this.webClient, "webClient");
-		Future<Void> future = webClient.post(API_VERSION_PREFIX + "/values")
+		Future<AnnounceResult> future = webClient.post(API_VERSION_PREFIX + "/values")
 				.bearerTokenAuthentication(getAccessToken())
 				.sendJsonObject(body)
 				.compose(res -> {
 					if (res.statusCode() == 201) {
-						return Future.<Void>succeededFuture();
+						AnnounceResult ar = requireBody(res.bodyAsJson(AnnounceResult.class));
+						return Future.succeededFuture(ar);
 					} else {
 						return Future.failedFuture(wrapErrorResponseToException(res));
 					}
@@ -429,14 +433,7 @@ public class HiggsNode implements Node {
 				.compose(res -> {
 					if (res.statusCode() == 200) {
 						JsonArray body = requireBody(res.bodyAsJsonArray());
-						List<PeerInfo> result = new ArrayList<>(body.size());
-						for (Object o : body) {
-							// Fail the future on a malformed element rather than throwing a checked
-							// HiggsException from a stream lambda.
-							if (!(o instanceof JsonObject jo))
-								return Future.failedFuture(new HiggsException(HiggsException.NO_HTTP_STATUS, "Malformed peer in gateway response"));
-							result.add(Json.objectMapper().convertValue(jo.getMap(), PeerInfo.class));
-						}
+						List<PeerInfo> result = Json.objectMapper().convertValue(body.getList(), new TypeReference<>() {});
 						return Future.succeededFuture(result);
 					} else if (res.statusCode() == 404) {
 						return Future.succeededFuture(List.<PeerInfo>of());
@@ -456,7 +453,7 @@ public class HiggsNode implements Node {
 	}
 
 	@Override
-	public ContextualFuture<Void> announcePeer(PeerInfo peer, int expectedSequenceNumber, boolean persistent) {
+	public ContextualFuture<AnnounceResult> announcePeer(PeerInfo peer, int expectedSequenceNumber, boolean persistent) {
 		Objects.requireNonNull(peer, "peer");
 		if (expectedSequenceNumber < -1)
 			throw new IllegalArgumentException("expectedSequenceNumber must be >= -1");
@@ -472,14 +469,16 @@ public class HiggsNode implements Node {
 		body.put("peer", peer);
 
 		WebClient webClient = requireInitialized(this.webClient, "webClient");
-		Future<Void> future = webClient.post(API_VERSION_PREFIX + "/peers")
+		Future<AnnounceResult> future = webClient.post(API_VERSION_PREFIX + "/peers")
 				.bearerTokenAuthentication(getAccessToken())
 				.sendJsonObject(body)
 				.compose(res -> {
-					if (res.statusCode() == 201)
-						return Future.<Void>succeededFuture();
-					else
+					if (res.statusCode() == 201) {
+						AnnounceResult ar = requireBody(res.bodyAsJson(AnnounceResult.class));
+						return Future.succeededFuture(ar);
+					} else {
 						return Future.failedFuture(wrapErrorResponseToException(res));
+					}
 				})
 				.recover((e) -> {
 					if (e instanceof HiggsException he)
@@ -502,8 +501,8 @@ public class HiggsNode implements Node {
 				.send()
 				.compose(res -> {
 					if (res.statusCode() == 200) {
-						JsonObject body = requireBody(res.bodyAsJsonObject());
-						return Future.succeededFuture(Optional.of(body.mapTo(Value.class)));
+						Value value = requireBody(res.bodyAsJson(Value.class));
+						return Future.succeededFuture(Optional.of(value));
 					} else if (res.statusCode() == 404) {
 						return Future.succeededFuture(Optional.<Value>empty());
 					} else {
@@ -702,7 +701,8 @@ public class HiggsNode implements Node {
 				.send()
 				.compose(res -> {
 					if (res.statusCode() == 200) {
-						return Future.succeededFuture(Optional.of(requireBody(res.bodyAsJson(PeerInfo.class))));
+						PeerInfo pi = requireBody(res.bodyAsJson(PeerInfo.class));
+						return Future.succeededFuture(Optional.of(pi));
 					} else if (res.statusCode() == 404) {
 						return Future.succeededFuture(Optional.<PeerInfo>empty());
 					} else {
