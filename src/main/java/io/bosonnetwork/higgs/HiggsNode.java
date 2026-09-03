@@ -129,6 +129,7 @@ public class HiggsNode implements Node {
 	private @Nullable Id gatewayNodeId;
 	private final Id gatewayPeerId;
 	private final URL gatewayUrl;
+	private final String basePath;
 
 	private LookupOption defaultLookupOption;
 
@@ -153,6 +154,9 @@ public class HiggsNode implements Node {
 
 		this.gatewayPeerId = Objects.requireNonNull(builder.gatewayPeerId, "gatewayPeerId must be set");
 		this.gatewayUrl = Objects.requireNonNull(builder.gatewayUrl, "gatewayUrl must be set");
+
+		String path = gatewayUrl.getPath().replaceAll("/+$", "");
+		this.basePath = path + API_VERSION_PREFIX;
 
 		this.defaultLookupOption = LookupOption.ARBITRARY;
 		this.running = new AtomicBoolean(false);
@@ -303,6 +307,13 @@ public class HiggsNode implements Node {
 		return ContextualFuture.succeededFuture();
 	}
 
+	private String uri(Object... suffixes) {
+		StringBuilder sb = new StringBuilder(basePath);
+		for (Object suffix : suffixes)
+			sb.append('/').append(suffix);
+		return sb.toString();
+	}
+
 	@Override
 	public ContextualFuture<Optional<NodeInfo>> findNode(Id id, @Nullable LookupOption option) {
 		Objects.requireNonNull(id, "id");
@@ -311,7 +322,7 @@ public class HiggsNode implements Node {
 		final LookupOption lookupOption = option != null ? option : defaultLookupOption;
 		WebClient webClient = requireInitialized(this.webClient, "webClient");
 
-		Future<Optional<NodeInfo>> future = webClient.get(API_VERSION_PREFIX + "/nodes/" + id)
+		Future<Optional<NodeInfo>> future = webClient.get(uri("nodes", id))
 				.addQueryParam("mode", lookupOption.name().toLowerCase())
 				.bearerTokenAuthentication(getAccessToken())
 				.send()
@@ -345,7 +356,7 @@ public class HiggsNode implements Node {
 		final LookupOption lookupOption = option != null ? option : defaultLookupOption;
 		WebClient webClient = requireInitialized(this.webClient, "webClient");
 
-		HttpRequest<Buffer> request = webClient.get(API_VERSION_PREFIX + "/values/" + id);
+		HttpRequest<Buffer> request = webClient.get(uri("values", id));
 		request.addQueryParam("mode", lookupOption.name().toLowerCase());
 		if (expectedSequenceNumber >= 0)
 			request.addQueryParam("seq", String.valueOf(expectedSequenceNumber));
@@ -389,7 +400,7 @@ public class HiggsNode implements Node {
 		body.put("value", value);
 
 		WebClient webClient = requireInitialized(this.webClient, "webClient");
-		Future<AnnounceResult> future = webClient.post(API_VERSION_PREFIX + "/values")
+		Future<AnnounceResult> future = webClient.post(uri("values"))
 				.bearerTokenAuthentication(getAccessToken())
 				.sendJsonObject(body)
 				.compose(res -> {
@@ -422,7 +433,7 @@ public class HiggsNode implements Node {
 		final LookupOption lookupOption = option != null ? option : defaultLookupOption;
 		WebClient webClient = requireInitialized(this.webClient, "webClient");
 
-		HttpRequest<Buffer> request = webClient.get(API_VERSION_PREFIX + "/peers/" + id);
+		HttpRequest<Buffer> request = webClient.get(uri("peers", id));
 		request.addQueryParam("mode", lookupOption.name().toLowerCase());
 		if (expectedSequenceNumber >= 0)
 			request.addQueryParam("seq", Integer.toString(expectedSequenceNumber));
@@ -469,7 +480,7 @@ public class HiggsNode implements Node {
 		body.put("peer", peer);
 
 		WebClient webClient = requireInitialized(this.webClient, "webClient");
-		Future<AnnounceResult> future = webClient.post(API_VERSION_PREFIX + "/peers")
+		Future<AnnounceResult> future = webClient.post(uri("peers"))
 				.bearerTokenAuthentication(getAccessToken())
 				.sendJsonObject(body)
 				.compose(res -> {
@@ -496,7 +507,7 @@ public class HiggsNode implements Node {
 		runningCheck();
 
 		WebClient webClient = requireInitialized(this.webClient, "webClient");
-		Future<Optional<Value>> future = webClient.get(API_VERSION_PREFIX + "/user/values/" + valueId)
+		Future<Optional<Value>> future = webClient.get(uri("user/values", valueId))
 				.bearerTokenAuthentication(getAccessToken())
 				.send()
 				.compose(res -> {
@@ -528,7 +539,7 @@ public class HiggsNode implements Node {
 		runningCheck();
 
 		WebClient webClient = requireInitialized(this.webClient, "webClient");
-		HttpRequest<Buffer> request = webClient.get(API_VERSION_PREFIX + "/user/values");
+		HttpRequest<Buffer> request = webClient.get(uri("user/values"));
 		if (page > 1 || pageSize != Long.MAX_VALUE) {
 			request.addQueryParam("page", Long.toString(page));
 			request.addQueryParam("pageSize", Long.toString(pageSize));
@@ -564,7 +575,7 @@ public class HiggsNode implements Node {
 		runningCheck();
 
 		WebClient webClient = requireInitialized(this.webClient, "webClient");
-		Future<Boolean> future = webClient.delete(API_VERSION_PREFIX + "/user/values/" + valueId)
+		Future<Boolean> future = webClient.delete(uri("user/values", valueId))
 				.bearerTokenAuthentication(getAccessToken())
 				.send()
 				.compose(res -> {
@@ -592,7 +603,7 @@ public class HiggsNode implements Node {
 		runningCheck();
 
 		WebClient webClient = requireInitialized(this.webClient, "webClient");
-		Future<List<PeerInfo>> future = webClient.get(API_VERSION_PREFIX + "/user/peers/" + peerId)
+		Future<List<PeerInfo>> future = webClient.get(uri("user/peers", peerId))
 				.bearerTokenAuthentication(getAccessToken())
 				.send()
 				.compose(res -> {
@@ -632,7 +643,7 @@ public class HiggsNode implements Node {
 		runningCheck();
 
 		WebClient webClient = requireInitialized(this.webClient, "webClient");
-		HttpRequest<Buffer> request = webClient.get(API_VERSION_PREFIX + "/user/peers");
+		HttpRequest<Buffer> request = webClient.get(uri("user/peers"));
 		if (page > 1 || pageSize != Long.MAX_VALUE) {
 			request.addQueryParam("page", Long.toString(page));
 			request.addQueryParam("pageSize", Long.toString(pageSize));
@@ -668,7 +679,7 @@ public class HiggsNode implements Node {
 		runningCheck();
 
 		WebClient webClient = requireInitialized(this.webClient, "webClient");
-		Future<Boolean> future = webClient.delete(API_VERSION_PREFIX + "/user/peers/" + peerId)
+		Future<Boolean> future = webClient.delete(uri("user/peers", peerId))
 				.bearerTokenAuthentication(getAccessToken())
 				.send()
 				.compose(res -> {
@@ -696,7 +707,7 @@ public class HiggsNode implements Node {
 		runningCheck();
 
 		WebClient webClient = requireInitialized(this.webClient, "webClient");
-		Future<Optional<PeerInfo>> future = webClient.get(API_VERSION_PREFIX + "/user/peers/" + peerId + "/" + fingerprint)
+		Future<Optional<PeerInfo>> future = webClient.get(uri("user/peers", peerId, fingerprint))
 				.bearerTokenAuthentication(getAccessToken())
 				.send()
 				.compose(res -> {
@@ -725,7 +736,7 @@ public class HiggsNode implements Node {
 		runningCheck();
 
 		WebClient webClient = requireInitialized(this.webClient, "webClient");
-		Future<Boolean> future = webClient.delete(API_VERSION_PREFIX + "/user/peers/" + peerId + "/" + fingerprint)
+		Future<Boolean> future = webClient.delete(uri("user/peers", peerId, fingerprint))
 				.bearerTokenAuthentication(getAccessToken())
 				.send()
 				.compose(res -> {
@@ -806,7 +817,7 @@ public class HiggsNode implements Node {
 
 	private Future<JsonObject> fetchGatewayInfo() {
 		WebClient webClient = requireInitialized(this.webClient, "webClient");
-		return webClient.get(API_VERSION_PREFIX + "/info")
+		return webClient.get(uri("info"))
 				.bearerTokenAuthentication(getAccessToken())
 				.send()
 				.compose(res -> {
