@@ -99,7 +99,7 @@ cd Boson.WebGateway.Client
 ./mvnw clean package
 ```
 
-The compiled JAR is placed in `target/lib/higgs-java-<version>.jar`.
+The compiled JAR is placed in `target/lib/boson-higgs-<version>.jar`.
 
 To skip tests:
 
@@ -116,7 +116,7 @@ Add the following to your Maven `pom.xml`:
 ```xml
 <dependency>
     <groupId>io.bosonnetwork</groupId>
-    <artifactId>higgs-java</artifactId>
+    <artifactId>boson-higgs</artifactId>
     <version>${boson.version}</version>
 </dependency>
 ```
