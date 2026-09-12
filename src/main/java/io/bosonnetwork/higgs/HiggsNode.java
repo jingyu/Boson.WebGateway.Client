@@ -31,6 +31,7 @@ import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 import com.fasterxml.jackson.core.type.TypeReference;
@@ -104,7 +105,9 @@ import io.bosonnetwork.web.PaginatedResult;
  * <h2>Lifecycle &amp; threading</h2>
  * Call {@link #start()} before issuing requests and {@link #stop()} when finished; requests made while
  * not running fail with {@link IllegalStateException}. Built on Vert.x - the returned
- * {@link ContextualFuture}s complete on the caller's Vert.x context.
+ * {@link CompletableFuture}s complete on the caller's Vert.x context. A Vert.x caller can turn one
+ * back into a {@link io.vertx.core.Future} with {@code Future.fromCompletionStage}. Cancellation is
+ * not supported: {@code cancel()} returns {@code false} and never stops a request in flight.
  *
  * <h2>Unsupported operations</h2>
  * Some {@link Node} methods are not meaningful for a gateway client: {@link #getNodeInfo()} throws
@@ -221,7 +224,7 @@ public class HiggsNode implements Node {
 	}
 
 	@Override
-	public ContextualFuture<Void> start() {
+	public CompletableFuture<Void> start() {
 		if (!running.compareAndSet(false, true))
 			return ContextualFuture.failedFuture(new IllegalStateException("Already started"));
 
@@ -263,7 +266,7 @@ public class HiggsNode implements Node {
 	}
 
 	@Override
-	public ContextualFuture<Void> stop() {
+	public CompletableFuture<Void> stop() {
 		if (!running.compareAndSet(true, false))
 			return ContextualFuture.failedFuture(new IllegalStateException("Not started"));
 
@@ -293,7 +296,7 @@ public class HiggsNode implements Node {
 	 *           contacting any node.
 	 */
 	@Override
-	public ContextualFuture<Void> bootstrap(NodeInfo node) {
+	public CompletableFuture<Void> bootstrap(NodeInfo node) {
 		return ContextualFuture.succeededFuture();
 	}
 
@@ -303,7 +306,7 @@ public class HiggsNode implements Node {
 	 * @implNote No-op in the gateway client (see {@link #bootstrap(NodeInfo)}).
 	 */
 	@Override
-	public ContextualFuture<Void> bootstrap(Collection<NodeInfo> bootstrapNodes) {
+	public CompletableFuture<Void> bootstrap(Collection<NodeInfo> bootstrapNodes) {
 		return ContextualFuture.succeededFuture();
 	}
 
@@ -315,7 +318,7 @@ public class HiggsNode implements Node {
 	}
 
 	@Override
-	public ContextualFuture<Optional<NodeInfo>> findNode(Id id, @Nullable LookupOption option) {
+	public CompletableFuture<Optional<NodeInfo>> findNode(Id id, @Nullable LookupOption option) {
 		Objects.requireNonNull(id, "id");
 		runningCheck();
 
@@ -347,7 +350,7 @@ public class HiggsNode implements Node {
 	}
 
 	@Override
-	public ContextualFuture<Optional<Value>> findValue(Id id, int expectedSequenceNumber, @Nullable LookupOption option) {
+	public CompletableFuture<Optional<Value>> findValue(Id id, int expectedSequenceNumber, @Nullable LookupOption option) {
 		Objects.requireNonNull(id, "id");
 		if (expectedSequenceNumber < -1)
 			throw new IllegalArgumentException("expectedSequenceNumber must be >= -1");
@@ -384,7 +387,7 @@ public class HiggsNode implements Node {
 	}
 
 	@Override
-	public ContextualFuture<AnnounceResult> storeValue(Value value, int expectedSequenceNumber, boolean persistent) {
+	public CompletableFuture<AnnounceResult> storeValue(Value value, int expectedSequenceNumber, boolean persistent) {
 		Objects.requireNonNull(value, "value");
 		if (expectedSequenceNumber < -1)
 			throw new IllegalArgumentException("expectedSequenceNumber must be >= -1");
@@ -422,7 +425,7 @@ public class HiggsNode implements Node {
 	}
 
 	@Override
-	public ContextualFuture<List<PeerInfo>> findPeer(Id id, int expectedSequenceNumber, int expectedCount, @Nullable LookupOption option) {
+	public CompletableFuture<List<PeerInfo>> findPeer(Id id, int expectedSequenceNumber, int expectedCount, @Nullable LookupOption option) {
 		Objects.requireNonNull(id, "id");
 		if (expectedSequenceNumber < -1)
 			throw new IllegalArgumentException("expectedSequenceNumber must be >= -1");
@@ -464,7 +467,7 @@ public class HiggsNode implements Node {
 	}
 
 	@Override
-	public ContextualFuture<AnnounceResult> announcePeer(PeerInfo peer, int expectedSequenceNumber, boolean persistent) {
+	public CompletableFuture<AnnounceResult> announcePeer(PeerInfo peer, int expectedSequenceNumber, boolean persistent) {
 		Objects.requireNonNull(peer, "peer");
 		if (expectedSequenceNumber < -1)
 			throw new IllegalArgumentException("expectedSequenceNumber must be >= -1");
@@ -502,7 +505,7 @@ public class HiggsNode implements Node {
 	}
 
 	@Override
-	public ContextualFuture<Optional<Value>> getValue(Id valueId) {
+	public CompletableFuture<Optional<Value>> getValue(Id valueId) {
 		Objects.requireNonNull(valueId, "valueId");
 		runningCheck();
 
@@ -530,7 +533,7 @@ public class HiggsNode implements Node {
 		return ContextualFuture.of(future);
 	}
 
-	public ContextualFuture<PaginatedResult<Value>> getAllValues(long page, long pageSize) {
+	public CompletableFuture<PaginatedResult<Value>> getAllValues(long page, long pageSize) {
 		if (page <= 0)
 			throw new IllegalArgumentException("page must be >= 1");
 		if (pageSize <= 0)
@@ -570,7 +573,7 @@ public class HiggsNode implements Node {
 	}
 
 	@Override
-	public ContextualFuture<Boolean> removeValue(Id valueId) {
+	public CompletableFuture<Boolean> removeValue(Id valueId) {
 		Objects.requireNonNull(valueId, "valueId");
 		runningCheck();
 
@@ -598,7 +601,7 @@ public class HiggsNode implements Node {
 	}
 
 	@Override
-	public ContextualFuture<List<PeerInfo>> getPeers(Id peerId) {
+	public CompletableFuture<List<PeerInfo>> getPeers(Id peerId) {
 		Objects.requireNonNull(peerId, "peerId");
 		runningCheck();
 
@@ -634,7 +637,7 @@ public class HiggsNode implements Node {
 		return ContextualFuture.of(future);
 	}
 
-	public ContextualFuture<PaginatedResult<PeerInfo>> getAllPeers(long page, long pageSize) {
+	public CompletableFuture<PaginatedResult<PeerInfo>> getAllPeers(long page, long pageSize) {
 		if (page <= 0)
 			throw new IllegalArgumentException("page must be >= 1");
 		if (pageSize <= 0)
@@ -674,7 +677,7 @@ public class HiggsNode implements Node {
 	}
 
 	@Override
-	public ContextualFuture<Boolean> removePeers(Id peerId) {
+	public CompletableFuture<Boolean> removePeers(Id peerId) {
 		Objects.requireNonNull(peerId, "peerId");
 		runningCheck();
 
@@ -702,7 +705,7 @@ public class HiggsNode implements Node {
 	}
 
 	@Override
-	public ContextualFuture<Optional<PeerInfo>> getPeer(Id peerId, long fingerprint) {
+	public CompletableFuture<Optional<PeerInfo>> getPeer(Id peerId, long fingerprint) {
 		Objects.requireNonNull(peerId, "peerId");
 		runningCheck();
 
@@ -731,7 +734,7 @@ public class HiggsNode implements Node {
 	}
 
 	@Override
-	public ContextualFuture<Boolean> removePeer(Id peerId, long fingerprint) {
+	public CompletableFuture<Boolean> removePeer(Id peerId, long fingerprint) {
 		Objects.requireNonNull(peerId, "peerId");
 		runningCheck();
 
