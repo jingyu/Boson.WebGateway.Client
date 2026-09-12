@@ -12,11 +12,11 @@
     </parent>
 
     <groupId>io.bosonnetwork</groupId>
-    <artifactId>higgs-java</artifactId>
+    <artifactId>boson-higgs</artifactId>
     <version>3.1.2-SNAPSHOT</version>
     <packaging>jar</packaging>
 
-    <name>Boson Higgs Java</name>
+    <name>Boson Higgs</name>
     <description>
         The lightweight node for Boson network.
     </description>
