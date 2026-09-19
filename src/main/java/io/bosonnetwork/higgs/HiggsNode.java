@@ -106,8 +106,7 @@ import io.bosonnetwork.web.PaginatedResult;
  * Call {@link #start()} before issuing requests and {@link #stop()} when finished; requests made while
  * not running fail with {@link IllegalStateException}. Built on Vert.x - the returned
  * {@link CompletableFuture}s complete on the caller's Vert.x context. A Vert.x caller can turn one
- * back into a {@link io.vertx.core.Future} with {@code Future.fromCompletionStage}. Cancellation is
- * not supported: {@code cancel()} returns {@code false} and never stops a request in flight.
+ * back into a {@link io.vertx.core.Future} with {@code Future.fromCompletionStage}.
  *
  * <h2>Unsupported operations</h2>
  * Some {@link Node} methods are not meaningful for a gateway client: {@link #getNodeInfo()} throws
