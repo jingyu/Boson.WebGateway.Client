@@ -38,7 +38,11 @@ import com.fasterxml.jackson.core.type.TypeReference;
 import io.vertx.core.Future;
 import io.vertx.core.Vertx;
 import io.vertx.core.buffer.Buffer;
+import io.vertx.core.http.HttpClient;
+import io.vertx.core.http.HttpClientResponse;
+import io.vertx.core.http.HttpMethod;
 import io.vertx.core.http.HttpVersion;
+import io.vertx.core.http.RequestOptions;
 import io.vertx.core.json.JsonArray;
 import io.vertx.core.json.JsonObject;
 import io.vertx.core.net.TrustOptions;
@@ -61,6 +65,8 @@ import io.bosonnetwork.LookupOption;
 import io.bosonnetwork.Node;
 import io.bosonnetwork.NodeInfo;
 import io.bosonnetwork.PeerInfo;
+import io.bosonnetwork.Subscription;
+import io.bosonnetwork.SubscriptionListener;
 import io.bosonnetwork.Value;
 import io.bosonnetwork.crypto.CryptoException;
 import io.bosonnetwork.crypto.CryptoIdentity;
@@ -111,6 +117,15 @@ import io.bosonnetwork.web.client.SelfIssuedAccessTokens;
  * {@link CompletableFuture}s complete on the caller's Vert.x context. A Vert.x caller can turn one
  * back into a {@link io.vertx.core.Future} with {@code Future.fromCompletionStage}.
  *
+ * <h2>Subscriptions</h2>
+ * {@link #subscribeValue} and {@link #subscribePeer} are held by the gateway for this node's device and
+ * pushed over one Server-Sent Events stream, which the device's first subscription opens and which is
+ * deleted a grace period ({@link Builder#subscriptionGracePeriod}) after its last is cancelled. The stream
+ * belongs to the device: two clients must not use the same device key, and the gateway ends the older
+ * one's subscriptions when they do. Listeners are called on this node's own context. On Android a
+ * connection does not survive Doze, so subscriptions are for the foreground: the stream reconnects, and
+ * catches up, when the app is back.
+ *
  * <h2>Unsupported operations</h2>
  * Some {@link Node} methods are not meaningful for a gateway client: {@link #getNodeInfo()} throws
  * {@link UnsupportedOperationException}, while {@link #bootstrap(NodeInfo) bootstrap},
@@ -138,7 +153,10 @@ public class HiggsNode implements Node {
 	private LookupOption defaultLookupOption;
 
 	private volatile @Nullable String gatewayVersion;
+	private @Nullable HttpClient httpClient;
 	private @Nullable WebClient webClient;
+	private volatile @Nullable GatewaySubscriptions subscriptions;
+	private final long subscriptionGracePeriod;
 
 	private final AccessTokenSource tokens;
 
@@ -171,6 +189,7 @@ public class HiggsNode implements Node {
 		this.basePath = path + API_VERSION_PREFIX;
 
 		this.defaultLookupOption = LookupOption.ARBITRARY;
+		this.subscriptionGracePeriod = builder.subscriptionGracePeriod;
 		this.running = new AtomicBoolean(false);
 	}
 
@@ -255,11 +274,21 @@ public class HiggsNode implements Node {
 				.setProtocolVersion(HttpVersion.HTTP_1_1);
 
 		if (ssl) {
+			// HTTP/2 when the gateway offers it, negotiated by ALPN, HTTP/1.1 otherwise: one connection
+			// then carries the subscription stream and the requests beside it. Cleartext stays on
+			// HTTP/1.1, which needs no negotiation.
 			options.setEnabledSecureTransportProtocols(Set.of("TLSv1.2", "TLSv1.3"))
-					.setTrustOptions(TrustOptions.wrap(new HybridTrustManager(gatewayPeerId.toString(), gatewayPeerId.bytesUnsafe())));
+					.setTrustOptions(TrustOptions.wrap(new HybridTrustManager(gatewayPeerId.toString(), gatewayPeerId.bytesUnsafe())))
+					.setUseAlpn(true)
+					.setProtocolVersion(HttpVersion.HTTP_2);
 		}
 
-		webClient = WebClient.create(vertx, options);
+		// One client for the requests and the subscription stream, which needs the core client to read
+		// its body as it arrives.
+		httpClient = vertx.createHttpClient(options);
+		webClient = WebClient.wrap(httpClient, options);
+		subscriptions = new GatewaySubscriptions(vertx.getOrCreateContext(), new SubscriptionTransport(),
+				subscriptionGracePeriod);
 
 		Future<Void> future = fetchGatewayInfo().compose(info -> {
 			Id peerId = Id.of(info.getString("peerId"));
@@ -272,10 +301,7 @@ public class HiggsNode implements Node {
 			return Future.succeededFuture();
 		}).onFailure(e -> {
 			log.error("Failed to get gateway info", e);
-			if (webClient != null) {
-				webClient.close();
-				webClient = null;
-			}
+			closeClients();
 			running.set(false);
 		}).mapEmpty();
 
@@ -287,12 +313,27 @@ public class HiggsNode implements Node {
 		if (!running.compareAndSet(true, false))
 			return ContextualFuture.failedFuture(new IllegalStateException("Not started"));
 
+		// The subscription stream is deleted before the client closes; a gateway that cannot be told
+		// expires it on its own.
+		GatewaySubscriptions subs = subscriptions;
+		subscriptions = null;
+		Future<Void> stopped = subs != null ? subs.stop() : Future.succeededFuture();
+		return ContextualFuture.of(stopped.eventually(() -> {
+			closeClients();
+			return Future.succeededFuture();
+		}));
+	}
+
+	private void closeClients() {
+		subscriptions = null;
 		if (webClient != null) {
 			webClient.close();
 			webClient = null;
 		}
-
-		return ContextualFuture.succeededFuture();
+		if (httpClient != null) {
+			httpClient.close();
+			httpClient = null;
+		}
 	}
 
 	@Override
@@ -850,6 +891,94 @@ public class HiggsNode implements Node {
 		return Optional.empty();
 	}
 
+	/**
+	 * {@inheritDoc}
+	 *
+	 * @implNote Held by the gateway for this node's device, and pushed over its event stream; see the
+	 *           class documentation. The future fails if the gateway refuses the target - this user's
+	 *           subscriptions are at their limit, or the gateway is full - or another client uses this
+	 *           device.
+	 */
+	@Override
+	public CompletableFuture<Subscription> subscribeValue(Id id, int knownSequenceNumber,
+			SubscriptionListener<Value> listener) {
+		Objects.requireNonNull(id, "id");
+		Objects.requireNonNull(listener, "listener");
+		if (knownSequenceNumber < -1)
+			throw new IllegalArgumentException("knownSequenceNumber must be >= -1");
+		runningCheck();
+
+		GatewaySubscriptions subs = requireInitialized(subscriptions, "subscriptions");
+		return ContextualFuture.of(subs.subscribe(GatewaySubscriptions.Kind.VALUE, id, knownSequenceNumber, listener));
+	}
+
+	/**
+	 * {@inheritDoc}
+	 *
+	 * @implNote As {@link #subscribeValue(Id, int, SubscriptionListener)}.
+	 */
+	@Override
+	public CompletableFuture<Subscription> subscribePeer(Id id, SubscriptionListener<PeerInfo> listener) {
+		Objects.requireNonNull(id, "id");
+		Objects.requireNonNull(listener, "listener");
+		runningCheck();
+
+		GatewaySubscriptions subs = requireInitialized(subscriptions, "subscriptions");
+		return ContextualFuture.of(subs.subscribe(GatewaySubscriptions.Kind.PEER, id, -1, listener));
+	}
+
+	// The gateway calls of the subscriptions, authenticated as every other request.
+	private final class SubscriptionTransport implements GatewaySubscriptions.Transport {
+		@Override
+		public Future<HttpResponse<Buffer>> subscribe(JsonObject body) {
+			WebClient client = requireInitialized(webClient, "webClient");
+			return sendAuthenticated(client.post(uri("subscriptions")), r -> r.sendJsonObject(body));
+		}
+
+		@Override
+		public Future<HttpResponse<Buffer>> unsubscribe(String kind, Id id) {
+			WebClient client = requireInitialized(webClient, "webClient");
+			return sendAuthenticated(client.delete(uri("subscriptions", kind, id)), HttpRequest::send);
+		}
+
+		@Override
+		public Future<HttpResponse<Buffer>> deleteStream() {
+			WebClient client = requireInitialized(webClient, "webClient");
+			return sendAuthenticated(client.delete(uri("subscriptions")), HttpRequest::send);
+		}
+
+		@Override
+		public Future<HttpClientResponse> openStream(@Nullable String lastEventId) {
+			return ContextualFuture.callOnVertxThread(vertx, () -> tokens.token().compose(token ->
+					openStream(token, lastEventId).compose(res -> {
+						// A refusal that blames our clock is retried once with a token it dates right.
+						if (res.statusCode() != 401 ||
+								!tokens.rejected(token, HttpDate.parse(res.getHeader(HttpHeaders.DATE))))
+							return Future.succeededFuture(res);
+
+						res.body();
+						return tokens.token().compose(fresh -> openStream(fresh, lastEventId));
+					})));
+		}
+
+		private Future<HttpClientResponse> openStream(String token, @Nullable String lastEventId) {
+			HttpClient client = requireInitialized(httpClient, "httpClient");
+			RequestOptions request = new RequestOptions()
+					.setMethod(HttpMethod.GET)
+					.setURI(uri("subscriptions", "events"))
+					.putHeader(HttpHeaders.AUTHORIZATION, "Bearer " + token)
+					.putHeader(HttpHeaders.ACCEPT, "text/event-stream");
+			if (lastEventId != null)
+				request.putHeader("Last-Event-ID", lastEventId);
+			// Paused before any of the body arrives, until the reader has its handlers in place.
+			return client.request(request).compose(req -> req.send()).map(res -> {
+				if (res.statusCode() == 200)
+					res.pause();
+				return res;
+			});
+		}
+	}
+
 	private Future<JsonObject> fetchGatewayInfo() {
 		WebClient webClient = requireInitialized(this.webClient, "webClient");
 		return sendAuthenticated(webClient.get(uri("info")),
@@ -933,6 +1062,7 @@ public class HiggsNode implements Node {
 		// gateway peer id and url
 		private Id gatewayPeerId;
 		private URL gatewayUrl;
+		private long subscriptionGracePeriod = 10_000;
 
 		private Builder() {
 			// Try to autoconfigure the Vert.x instance if the builder is created within a Vert.x context.
@@ -1098,6 +1228,21 @@ public class HiggsNode implements Node {
 		 * @throws IllegalStateException if {@code deviceKey} is missing, if neither {@code userId} nor
 		 *         {@code userKey} is set, or if any of {@code gatewayPeerId} or {@code gatewayUrl} is missing
 		 */
+		/**
+		 * Sets how long the subscription stream is kept after its last subscription is cancelled, so
+		 * that an app cancelling and subscribing again keeps it. Default 10 seconds.
+		 *
+		 * @param millis the grace period in milliseconds
+		 * @return this builder
+		 * @throws IllegalArgumentException if negative
+		 */
+		public Builder subscriptionGracePeriod(long millis) {
+			if (millis < 0)
+				throw new IllegalArgumentException("Invalid subscriptionGracePeriod");
+			this.subscriptionGracePeriod = millis;
+			return this;
+		}
+
 		public HiggsNode build() {
 			try {
 				return new HiggsNode(this);
