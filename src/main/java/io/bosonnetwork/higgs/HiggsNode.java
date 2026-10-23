@@ -1222,13 +1222,6 @@ public class HiggsNode implements Node {
 		}
 
 		/**
-		 * Validates the configuration and builds the {@link HiggsNode}.
-		 *
-		 * @return the configured node
-		 * @throws IllegalStateException if {@code deviceKey} is missing, if neither {@code userId} nor
-		 *         {@code userKey} is set, or if any of {@code gatewayPeerId} or {@code gatewayUrl} is missing
-		 */
-		/**
 		 * Sets how long the subscription stream is kept after its last subscription is cancelled, so
 		 * that an app cancelling and subscribing again keeps it. Default 10 seconds.
 		 *
@@ -1243,6 +1236,13 @@ public class HiggsNode implements Node {
 			return this;
 		}
 
+		/**
+		 * Validates the configuration and builds the {@link HiggsNode}.
+		 *
+		 * @return the configured node
+		 * @throws IllegalStateException if {@code deviceKey} is missing, if neither {@code userId} nor
+		 *         {@code userKey} is set, or if any of {@code gatewayPeerId} or {@code gatewayUrl} is missing
+		 */
 		public HiggsNode build() {
 			try {
 				return new HiggsNode(this);
