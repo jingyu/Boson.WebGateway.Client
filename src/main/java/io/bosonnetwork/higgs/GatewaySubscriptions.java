@@ -49,6 +49,7 @@ import io.bosonnetwork.Subscription;
 import io.bosonnetwork.SubscriptionListener;
 import io.bosonnetwork.Value;
 import io.bosonnetwork.higgs.exceptions.HiggsException;
+import io.bosonnetwork.utils.MonotonicClock;
 import io.bosonnetwork.vertx.ContextualFuture;
 
 /**
@@ -457,7 +458,7 @@ final class GatewaySubscriptions {
 	private void opened(HttpClientResponse response) {
 		reader = response;
 		attempts = 0;
-		lastBytesAt = System.currentTimeMillis();
+		lastBytesAt = MonotonicClock.elapsedMillis();
 		SseParser parser = new SseParser(new SseParser.Handler() {
 			@Override
 			public void onEvent(String name, String data, @Nullable String id) {
@@ -474,7 +475,7 @@ final class GatewaySubscriptions {
 		response.handler(chunk -> {
 			if (reader != response)
 				return;
-			lastBytesAt = System.currentTimeMillis();
+			lastBytesAt = MonotonicClock.elapsedMillis();
 			try {
 				parser.feed(chunk.getBytes());
 				lastEventId = parser.lastEventId() != null ? parser.lastEventId() : lastEventId;
@@ -488,7 +489,7 @@ final class GatewaySubscriptions {
 		response.resume();
 
 		watchdogTimer = context.owner().setPeriodic(SILENCE_MILLIS / 3, SILENCE_MILLIS / 3, t -> {
-			if (reader == response && System.currentTimeMillis() - lastBytesAt > SILENCE_MILLIS) {
+			if (reader == response && MonotonicClock.elapsedMillis() - lastBytesAt > SILENCE_MILLIS) {
 				log.debug("Subscription stream silent for {}ms; reconnecting", SILENCE_MILLIS);
 				dropped(response);
 			}
